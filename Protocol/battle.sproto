@@ -1,0 +1,304 @@
+# 炮战对局。ok 用 0/1，避免布尔在两端编码不一致。
+
+.JoinReq {
+	nonce 0 : integer
+	body 1 : integer
+	botBody 2 : integer
+}
+
+.JoinRes {
+	ok 0 : integer
+	matchId 1 : integer
+	you 2 : integer
+	msg 3 : string
+}
+
+csJoinBattle 2 {
+	request JoinReq
+	response JoinRes
+}
+
+.Tank {
+	seat 0 : integer
+	name 1 : string
+	x 2 : integer
+	y 3 : integer
+	hp 4 : integer
+	maxHp 5 : integer
+	alive 6 : integer
+	fuel 7 : integer
+	bot 8 : integer
+	team 9 : integer
+	body 10 : integer
+	wait 11 : integer
+	armed 12 : integer
+	still 13 : integer
+	poison 14 : integer
+	frozen 15 : integer
+}
+
+.Mine {
+	x 0 : integer
+	y 1 : integer
+}
+
+.Cloud {
+	x 0 : integer
+	y 1 : integer
+	r 2 : integer
+}
+
+.Crate {
+	x 0 : integer
+	y 1 : integer
+}
+
+.StatePush {
+	rev 0 : integer
+	matchId 1 : integer
+	you 2 : integer
+	wind 3 : integer
+	turn 4 : integer
+	winner 5 : integer
+	phase 6 : string
+	log 7 : string
+	terrain 8 : *integer
+	tanks 9 : *Tank
+	crates 10 : *Crate
+	mines 11 : *Mine
+	clouds 12 : *Cloud
+}
+
+scState 3 {
+	request StatePush
+}
+
+.Shot {
+	xs 0 : *integer
+	ys 1 : *integer
+	hitX 2 : integer
+	hitY 3 : integer
+	radius 4 : integer
+	hit 5 : integer
+	weapon 6 : integer
+}
+
+.ResolvePush {
+	shots 0 : *Shot
+	state 1 : StatePush
+}
+
+scResolve 4 {
+	request ResolvePush
+}
+
+.FireReq {
+	angle 0 : integer
+	power 1 : integer
+	weapon 2 : integer
+}
+
+.FireRes {
+	ok 0 : integer
+	msg 1 : string
+}
+
+csFire 5 {
+	request FireReq
+	response FireRes
+}
+
+.MoveReq {
+	dir 0 : integer
+}
+
+.MoveRes {
+	ok 0 : integer
+	msg 1 : string
+}
+
+csMove 6 {
+	request MoveReq
+	response MoveRes
+}
+
+.RoomMember {
+	seat 0 : integer
+	name 1 : string
+	ready 2 : integer
+	host 3 : integer
+	team 4 : integer
+	body 5 : integer
+}
+
+.RoomPush {
+	roomId 0 : integer
+	mapId 1 : integer
+	phase 2 : string
+	you 3 : integer
+	log 4 : string
+	members 5 : *RoomMember
+}
+
+scRoom 7 {
+	request RoomPush
+}
+
+.CreateRoomReq {
+	nonce 0 : integer
+}
+
+.CreateRoomRes {
+	ok 0 : integer
+	roomId 1 : integer
+	msg 2 : string
+}
+
+csCreateRoom 8 {
+	request CreateRoomReq
+	response CreateRoomRes
+}
+
+.JoinRoomReq {
+	roomId 0 : integer
+}
+
+.JoinRoomRes {
+	ok 0 : integer
+	roomId 1 : integer
+	msg 2 : string
+}
+
+csJoinRoom 9 {
+	request JoinRoomReq
+	response JoinRoomRes
+}
+
+.SelectMapReq {
+	mapId 0 : integer
+}
+
+.AckRes {
+	ok 0 : integer
+	msg 1 : string
+}
+
+csSelectMap 10 {
+	request SelectMapReq
+	response AckRes
+}
+
+.ReadyReq {
+	ready 0 : integer
+}
+
+csReady 11 {
+	request ReadyReq
+	response AckRes
+}
+
+csStartGame 12 {
+	request CreateRoomReq
+	response AckRes
+}
+
+csReturnRoom 13 {
+	request CreateRoomReq
+	response AckRes
+}
+
+csLeaveRoom 14 {
+	request CreateRoomReq
+	response AckRes
+}
+
+.TeamReq {
+	team 0 : integer
+}
+
+csSelectTeam 15 {
+	request TeamReq
+	response AckRes
+}
+
+.RoomBrief {
+	roomId 0 : integer
+	mapId 1 : integer
+	phase 2 : string
+	count 3 : integer
+	red 4 : integer
+	blue 5 : integer
+	host 6 : string
+	ready 7 : integer
+}
+
+.RoomListPush {
+	rooms 0 : *RoomBrief
+}
+
+scRoomList 16 {
+	request RoomListPush
+}
+
+csEnterLobby 17 {
+	request CreateRoomReq
+	response AckRes
+}
+
+csLeaveLobby 18 {
+	request CreateRoomReq
+	response AckRes
+}
+
+.BodyReq {
+	body 0 : integer
+}
+
+csSelectBody 19 {
+	request BodyReq
+	response AckRes
+}
+
+.BagSlot {
+	slot 0 : integer
+	item 1 : integer
+	qty 2 : integer
+}
+
+.BagPush {
+	cring 0 : integer
+	stock 1 : *BagSlot
+	loadout 2 : *BagSlot
+}
+
+scBag 20 {
+	request BagPush
+}
+
+.BuyReq {
+	item 0 : integer
+}
+
+csBuy 21 {
+	request BuyReq
+	response AckRes
+}
+
+.EquipReq {
+	slot 0 : integer
+	item 1 : integer
+}
+
+csEquip 22 {
+	request EquipReq
+	response AckRes
+}
+
+.UseReq {
+	slot 0 : integer
+}
+
+csUseItem 23 {
+	request UseReq
+	response AckRes
+}

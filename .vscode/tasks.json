@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Server: 开服",
+      "type": "shell",
+      "command": "cmd",
+      "args": ["/d", "/c", "shell\\start.bat"],
+      "options": {
+        "cwd": "${workspaceFolder}\\Server"
+      },
+      "detail": "启动 db / gate / login / world，并在这个终端实时显示四份日志",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": false,
+        "close": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Server: 关服",
+      "type": "shell",
+      "command": "cmd",
+      "args": ["/d", "/c", "shell\\stop.bat", "all"],
+      "options": {
+        "cwd": "${workspaceFolder}\\Server"
+      },
+      "detail": "结束本机全部 skynet.exe，包括其他工程",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": false,
+        "close": false
+      },
+      "problemMatcher": []
+    }
+  ]
+}

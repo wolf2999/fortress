@@ -1,0 +1,12 @@
+Client/node_modules/
+Client/dist/
+Client/public/protocol/
+
+Server/log/
+
+Third/
+
+*.log
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,17 @@
+-- 登录进程。uid 由 dbApp 从 MySQL 取出或新建。
+root = "./"
+
+harbor = 0
+thread = 8
+
+start = "loginApp/main"
+runconfig = "runconfig"
+nodename = "loginApp"
+cluster = "etc/clustername.lua"
+
+bootstrap = "snlua bootstrap"
+lualoader = root.."lualib/loader.lua"
+cpath = root.."cservice/?.so"
+lua_cpath = root.."luaclib/?.so"
+luaservice = root.."service/?.lua;"..root.."dev/?.lua"
+lua_path = root.."lualib/?.lua;"..root.."lualib/?/init.lua;"..root.."etc/?.lua;"..root.."dev/?.lua;"..root.."config/?.lua"

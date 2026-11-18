@@ -1,0 +1,37 @@
+# 网关协议。tag 全局唯一，业务协议在 battle.sproto。
+# 线上格式与 skynet sproto 一致：.package 头后面追加业务结构体，不使用 ud。
+
+.package {
+	type 0 : integer
+	session 1 : integer
+	ud 2 : string
+}
+
+.EchoReq {
+	ping 0 : string
+}
+
+.EchoRes {
+	pong 0 : string
+}
+
+rpcEcho 0 {
+	request EchoReq
+	response EchoRes
+}
+
+.AuthReq {
+	account 0 : string
+	password 1 : string
+}
+
+.AuthRes {
+	ok 0 : integer
+	uid 1 : integer
+	msg 2 : string
+}
+
+rpcAuthClient 1 {
+	request AuthReq
+	response AuthRes
+}

@@ -1,0 +1,22 @@
+{
+  "name": "fortress-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "sync:protocol": "node scripts/sync-protocol.mjs",
+    "predev": "node scripts/sync-protocol.mjs",
+    "prebuild": "node scripts/sync-protocol.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nansnunen/sproto-js": "^0.1.1",
+    "phaser": "^4.2.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0"
+  }
+}

@@ -1,0 +1,11 @@
+local skynet = require("skynet")
+local cc = require("common.cluster")
+
+skynet.start(function()
+	cc.open()
+	local worldId = skynet.uniqueservice("worldApp/world")
+	cc.register("world", worldId)
+	local battleId = skynet.uniqueservice("worldApp/battle")
+	cc.register("battle", battleId)
+	skynet.error("[worldApp] main started, world/battle registered")
+end)

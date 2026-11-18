@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>炮战演习</title>
+    <style>
+      html, body { margin: 0; background: #10151c; color: #f4efe6; font-family: "Microsoft YaHei", sans-serif; }
+      body { min-height: 100vh; display: flex; justify-content: center; align-items: flex-start; padding: 16px 12px 28px; box-sizing: border-box; }
+      main { width: 960px; max-width: 100%; }
+      h1 { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+      h2 { font-size: 16px; font-weight: 600; margin: 0; }
+      #app { width: min(960px, 100%); aspect-ratio: 960 / 540; background: #1b2838; }
+      #app canvas { display: block; }
+      #hud, .panel { margin-top: 12px; display: grid; gap: 8px; }
+      .panel { max-width: 460px; }
+      #panel-room { max-width: 960px; }
+      #panel-gate { max-width: 640px; }
+      #room-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+      #room-list button { width: 100%; text-align: left; }
+      .sides { display: flex; gap: 12px; }
+      .side { flex: 1; background: #1b2838; border: 1px solid #3d5168; border-radius: 4px; padding: 8px 10px; min-height: 88px; }
+      .side h3 { margin: 0 0 6px; font-size: 14px; }
+      .side ul { margin: 0; padding-left: 18px; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      button, select, input[type="text"], input[type="number"] { background: #243140; color: #f4efe6; border: 1px solid #3d5168; border-radius: 4px; padding: 6px 10px; font: inherit; }
+      #body-picks { display: flex; flex-wrap: wrap; gap: 12px; }
+      .body-era h3 { margin: 0 0 6px; font-size: 13px; }
+      button.on { background: #8a5a2a; border-color: #e0b15a; }
+      button:disabled { opacity: 0.45; }
+      label { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+      input[type="range"] { width: 180px; }
+      #log, #hp, #wind, .hint { font-size: 14px; }
+      #log, .hint { color: #ffe08a; }
+      #members { margin: 0; padding-left: 18px; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>炮战演习</h1>
+      <div id="app" class="hidden"></div>
+
+      <section id="panel-menu" class="panel">
+        <button type="button" id="btn-enter">进入游戏</button>
+        <button type="button" id="btn-bot-entry">人机测试</button>
+      </section>
+
+      <section id="panel-bot" class="panel hidden">
+        <h2>人机测试</h2>
+        <div class="row">
+          <label>我的坦克 <select id="pick-self"></select></label>
+          <label>对方坦克 <select id="pick-foe"></select></label>
+        </div>
+        <div class="row">
+          <input id="bot-account" type="text" maxlength="16" value="炮手" placeholder="名字" />
+          <input id="bot-password" type="password" maxlength="32" placeholder="密码" />
+          <button type="button" id="btn-vs-bot">对机器人</button>
+          <button type="button" id="btn-local">本地双人</button>
+        </div>
+        <p id="bot-msg" class="hint"></p>
+        <button type="button" id="btn-bot-back">返回</button>
+      </section>
+
+      <section id="panel-gate" class="panel hidden">
+        <h2>进入游戏</h2>
+        <div class="row">
+          <label>名字 <input id="account" type="text" maxlength="16" value="炮手" /></label>
+          <label>密码 <input id="password" type="password" maxlength="32" placeholder="4 到 32 位" /></label>
+        </div>
+        <p class="hint">新名字会建号。以前没设过密码的名字，第一次填写会把密码定下来。</p>
+        <div class="row">
+          <button type="button" id="btn-create">创建房间</button>
+        </div>
+        <ul id="room-list"></ul>
+        <div class="row">
+          <input id="room-id" type="number" min="1" placeholder="房间号" />
+          <button type="button" id="btn-join">加入房间</button>
+        </div>
+        <p id="gate-msg" class="hint"></p>
+        <button type="button" id="btn-gate-back">返回</button>
+      </section>
+
+      <section id="panel-room" class="panel hidden">
+        <h2 id="room-title">房间</h2>
+        <p class="hint">先选坦克。红蓝人数相同，并且参战的人都准备后，房主才能开始。观战不计入人数。换坦克会取消准备。</p>
+        <div id="body-picks"></div>
+        <p id="body-detail" class="hint"></p>
+        <p id="room-log" class="hint"></p>
+        <div class="row" id="map-picks">
+          <button type="button" id="btn-map-1">丘陵</button>
+          <button type="button" id="btn-map-2">峡谷</button>
+        </div>
+        <div class="sides">
+          <div class="side">
+            <h3 id="side-a-title">红方</h3>
+            <ul id="side-a"></ul>
+          </div>
+          <div class="side">
+            <h3 id="side-b-title">蓝方</h3>
+            <ul id="side-b"></ul>
+          </div>
+        </div>
+        <p id="side-ob">观战：无</p>
+        <div class="row">
+          <button type="button" id="btn-team-a">换到红方</button>
+          <button type="button" id="btn-team-b">换到蓝方</button>
+          <button type="button" id="btn-team-ob">观战</button>
+        </div>
+        <div class="row">
+          <button type="button" id="btn-ready">准备</button>
+          <button type="button" id="btn-start">开始游戏</button>
+          <button type="button" id="btn-leave">离开房间</button>
+        </div>
+        <div id="shop">
+          <h3>军火库</h3>
+          <p id="cring" class="hint"></p>
+          <div id="shop-list"></div>
+          <p id="loadout" class="hint"></p>
+        </div>
+      </section>
+
+      <div id="hud" class="hidden">
+        <div class="row">
+          <span id="wind">无风</span>
+          <span id="hp"></span>
+          <span id="fuel"></span>
+        </div>
+        <div id="log"></div>
+        <div id="end" class="row hidden">
+          <span id="end-text"></span>
+          <button type="button" id="btn-return">返回房间</button>
+        </div>
+        <div class="row">
+          <button type="button" id="btn-left">左移 A</button>
+          <button type="button" id="btn-right">右移 D</button>
+          <label>角度 <input id="angle" type="range" min="0" max="180" value="60" /> <span id="angle-val">60°</span></label>
+          <label>力度 <input id="power" type="range" min="10" max="1000" step="10" value="550" /> <span id="power-val">550</span></label>
+        </div>
+        <div class="row">
+          <span id="weapon-bar" class="row"></span>
+          <button type="button" id="btn-fire">发射</button>
+        </div>
+        <div id="item-bar" class="row"></div>
+      </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

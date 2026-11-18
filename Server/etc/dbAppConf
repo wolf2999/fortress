@@ -1,0 +1,26 @@
+-- 数据库进程。连接方式和 MapleStory 的 etc/dbAppConf 相同，库名用 fortress。
+root = "./"
+
+db_host = "127.0.0.1"
+db_port = 3306
+db_user = "root"
+db_password = "123456"
+db_name = "fortress"
+
+redis_host = "127.0.0.1"
+redis_port = 6379
+
+harbor = 0
+thread = 8
+
+start = "dbApp/main"
+runconfig = "runconfig"
+nodename = "dbApp"
+cluster = "etc/clustername.lua"
+
+bootstrap = "snlua bootstrap"
+lualoader = root.."lualib/loader.lua"
+cpath = root.."cservice/?.so"
+lua_cpath = root.."luaclib/?.so"
+luaservice = root.."service/?.lua;"..root.."dev/?.lua"
+lua_path = root.."lualib/?.lua;"..root.."lualib/?/init.lua;"..root.."etc/?.lua;"..root.."dev/?.lua;"..root.."config/?.lua"

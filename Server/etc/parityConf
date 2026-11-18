@@ -1,0 +1,13 @@
+-- 一次性对拍进程，不监听集群，跑完自己退出。
+root = "./"
+
+harbor = 0
+thread = 2
+
+start = "parity/main"
+bootstrap = "snlua bootstrap"
+lualoader = root.."lualib/loader.lua"
+cpath = root.."cservice/?.so"
+lua_cpath = root.."luaclib/?.so"
+luaservice = root.."service/?.lua;"..root.."dev/?.lua"
+lua_path = root.."lualib/?.lua;"..root.."lualib/?/init.lua;"..root.."dev/?.lua;"..root.."config/?.lua"

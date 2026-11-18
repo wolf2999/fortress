@@ -1,0 +1,19 @@
+-- 网关进程：客户端唯一入口，websocket 8090。业务经 cluster 转发。
+root = "./"
+
+harbor = 0
+thread = 8
+
+start = "gateApp/main"
+runconfig = "runconfig"
+nodename = "gateApp"
+cluster = "etc/clustername.lua"
+
+bootstrap = "snlua bootstrap"
+lualoader = root.."lualib/loader.lua"
+cpath = root.."cservice/?.so"
+lua_cpath = root.."luaclib/?.so"
+luaservice = root.."service/?.lua;"..root.."dev/?.lua"
+lua_path = root.."lualib/?.lua;"..root.."lualib/?/init.lua;"..root.."etc/?.lua;"..root.."dev/?.lua;"..root.."config/?.lua"
+
+gate_port = 8090

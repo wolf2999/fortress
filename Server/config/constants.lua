@@ -1,0 +1,21 @@
+--[[ 全局常量。与 Client/src/sim/constants.ts 保持同一组数。 ]]
+return {
+	worldW = 960,
+	worldH = 540,
+	colW = 4,
+	gravity = 500,
+	windAccel = 15,
+	launchRef = 1000,
+	powerMax = 1000,
+	windMax = 5,
+	tankW = 48,
+	tankH = 20,
+	tankHp = 1000,
+	muzzle = 30,
+	moveStep = 22,
+	moveFuel = 220,
+	moveCost = 10,
+	dt = 1 / 60,
+	maxLife = 8,
+	hitPad = 14,
+}
