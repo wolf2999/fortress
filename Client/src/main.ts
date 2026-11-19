@@ -6,6 +6,8 @@ import {
   createRoom,
   currentAim,
   getNotice,
+  getPickMapId,
+  getPickTerrainKind,
   getRoom,
   getRoomList,
   getScreen,
@@ -16,6 +18,7 @@ import {
   selectMap,
   selectTeam,
   setAim,
+  setPickMap,
   showBot,
   showGate,
   showMenu,
@@ -35,7 +38,7 @@ import {
   equipItem,
 } from "./game/controller";
 import { angleWindow } from "./sim/rules";
-import { MAPS, MOVE_COST } from "./sim/constants";
+import { MAPS, MOVE_COST, TERRAIN_HEIGHT, TERRAIN_KINDS, TERRAIN_MASK } from "./sim/constants";
 import { ITEMS, itemById } from "./sim/items";
 import { ERAS, TANKS, bodyBlurb, fuelMaxOf, tankById, weaponsOf } from "./sim/tanks";
 
@@ -140,11 +143,12 @@ function paintRoomList(): void {
     const item = document.createElement("li");
     const btn = document.createElement("button");
     const map = MAPS.find((entry) => entry.id === brief.mapId)?.name ?? "地图";
+    const kind = TERRAIN_KINDS.find((entry) => entry.id === brief.terrainKind)?.name ?? "高度列";
     const phase = brief.phase === "play" ? "对局中" : brief.phase === "over" ? "已结束" : "等待中";
     const fighters = brief.red + brief.blue;
     btn.dataset.room = String(brief.roomId);
     btn.disabled = brief.phase !== "lobby" || brief.count >= 8;
-    btn.textContent = `${brief.roomId}  ${map}  ${phase}  红${brief.red} 蓝${brief.blue}  准备${brief.ready}/${fighters}  ${brief.count}/8  ${brief.host}`;
+    btn.textContent = `${brief.roomId}  ${map}·${kind}  ${phase}  红${brief.red} 蓝${brief.blue}  准备${brief.ready}/${fighters}  ${brief.count}/8  ${brief.host}`;
     item.append(btn);
     list.append(item);
   }
@@ -171,6 +175,18 @@ function paint(): void {
   el("gate-msg").textContent = screen === "gate" ? notice : "";
   if (screen === "gate") paintRoomList();
 
+  if (screen === "bot") {
+    const mapId = getPickMapId();
+    const kindId = getPickTerrainKind();
+    el<HTMLButtonElement>("btn-bot-map-1").classList.toggle("on", mapId === 1);
+    el<HTMLButtonElement>("btn-bot-map-2").classList.toggle("on", mapId === 2);
+    el<HTMLButtonElement>("btn-bot-kind-1").classList.toggle("on", kindId === TERRAIN_HEIGHT);
+    el<HTMLButtonElement>("btn-bot-kind-2").classList.toggle("on", kindId === TERRAIN_MASK);
+    const map = MAPS.find((item) => item.id === mapId);
+    const kind = TERRAIN_KINDS.find((item) => item.id === kindId);
+    el("bot-map-hint").textContent = [map?.blurb, kind?.blurb].filter(Boolean).join(" · ");
+  }
+
   if (room && screen === "room") {
     const mine = room.members.find((m) => m.seat === room.you);
     const host = mine?.host === 1;
@@ -184,8 +200,15 @@ function paint(): void {
     el("room-log").textContent = [notice, room.log, block].filter(Boolean).join(" · ");
     el<HTMLButtonElement>("btn-map-1").disabled = !host;
     el<HTMLButtonElement>("btn-map-2").disabled = !host;
+    el<HTMLButtonElement>("btn-kind-1").disabled = !host;
+    el<HTMLButtonElement>("btn-kind-2").disabled = !host;
     el<HTMLButtonElement>("btn-map-1").classList.toggle("on", room.mapId === 1);
     el<HTMLButtonElement>("btn-map-2").classList.toggle("on", room.mapId === 2);
+    el<HTMLButtonElement>("btn-kind-1").classList.toggle("on", room.terrainKind === TERRAIN_HEIGHT);
+    el<HTMLButtonElement>("btn-kind-2").classList.toggle("on", room.terrainKind === TERRAIN_MASK);
+    const map = MAPS.find((item) => item.id === room.mapId);
+    const kind = TERRAIN_KINDS.find((item) => item.id === room.terrainKind);
+    el("map-kind-hint").textContent = [map?.blurb, kind?.blurb].filter(Boolean).join(" · ");
     el("side-a-title").textContent = `红方 ${red}/4`;
     el("side-b-title").textContent = `蓝方 ${blue}/4`;
     fillSide("side-a", room.members.filter((m) => m.team === 0));
@@ -336,7 +359,6 @@ el("btn-enter").addEventListener("click", () => {
 el("btn-bot-entry").addEventListener("click", () => showBot());
 el("btn-bot-back").addEventListener("click", () => showMenu());
 el("btn-gate-back").addEventListener("click", () => showMenu());
-el("btn-local").addEventListener("click", () => bootLocal(picked("pick-self"), picked("pick-foe")));
 el("btn-vs-bot").addEventListener("click", () => void connectOnline(botAccount.value, picked("pick-self"), picked("pick-foe"), botPassword.value));
 el("btn-create").addEventListener("click", () => void createRoom(account.value, password.value));
 el("room-list").addEventListener("click", (ev) => {
@@ -345,8 +367,27 @@ el("room-list").addEventListener("click", (ev) => {
   void joinRoom(account.value, Number(btn.dataset.room), password.value);
 });
 el("btn-join").addEventListener("click", () => void joinRoom(account.value, Number(roomId.value), password.value));
-el("btn-map-1").addEventListener("click", () => void selectMap(1));
-el("btn-map-2").addEventListener("click", () => void selectMap(2));
+el("btn-map-1").addEventListener("click", () => {
+  const kind = getRoom()?.terrainKind ?? TERRAIN_HEIGHT;
+  void selectMap(1, kind);
+});
+el("btn-map-2").addEventListener("click", () => {
+  const kind = getRoom()?.terrainKind ?? TERRAIN_HEIGHT;
+  void selectMap(2, kind);
+});
+el("btn-kind-1").addEventListener("click", () => {
+  const mapId = getRoom()?.mapId ?? 1;
+  void selectMap(mapId, TERRAIN_HEIGHT);
+});
+el("btn-kind-2").addEventListener("click", () => {
+  const mapId = getRoom()?.mapId ?? 1;
+  void selectMap(mapId, TERRAIN_MASK);
+});
+el("btn-bot-map-1").addEventListener("click", () => setPickMap(1));
+el("btn-bot-map-2").addEventListener("click", () => setPickMap(2));
+el("btn-bot-kind-1").addEventListener("click", () => setPickMap(getPickMapId(), TERRAIN_HEIGHT));
+el("btn-bot-kind-2").addEventListener("click", () => setPickMap(getPickMapId(), TERRAIN_MASK));
+el("btn-local").addEventListener("click", () => bootLocal(picked("pick-self"), picked("pick-foe"), getPickMapId(), getPickTerrainKind()));
 el("btn-team-a").addEventListener("click", () => void selectTeam(0));
 el("btn-team-b").addEventListener("click", () => void selectTeam(1));
 el("btn-team-ob").addEventListener("click", () => void selectTeam(2));

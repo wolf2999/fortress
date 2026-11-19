@@ -26,6 +26,15 @@ export const MAPS = [
   { id: 2, name: "峡谷", blurb: "两边高，中间深" },
 ];
 
+/** 1 高度列：一列一个表面。2 像素掩码：可挖空洞。 */
+export const TERRAIN_HEIGHT = 1;
+export const TERRAIN_MASK = 2;
+
+export const TERRAIN_KINDS = [
+  { id: TERRAIN_HEIGHT, name: "高度列", blurb: "地面是一条天际线，炸开就是缺口" },
+  { id: TERRAIN_MASK, name: "像素掩码", blurb: "土可以挖出空洞和顶棚" },
+];
+
 export interface Weapon {
   id: number;
   name: string;

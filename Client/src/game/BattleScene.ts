@@ -14,14 +14,17 @@ import {
   useItem,
   windText,
 } from "./controller";
-import { TANK_H, TANK_W, WORLD_H, WORLD_W } from "../sim/constants";
-import { defaultAngle } from "../sim/rules";
+import { TANK_H, TANK_W, TERRAIN_KINDS, TERRAIN_MASK, WORLD_H, WORLD_W } from "../sim/constants";
+import { defaultAngle, type ShotPath, type Tank, type TerrainMask } from "../sim/rules";
 import { tankById } from "../sim/tanks";
-import type { ShotPath, Tank } from "../sim/rules";
 
-const SKY = 0x1b2838;
+const SKY_HEIGHT = 0x1b2838;
+const SKY_MASK = 0x15202c;
 const GROUND = 0x6e4b2a;
+const GROUND_MASK = 0x5a3d22;
+const GROUND_DEEP = 0x3f2a18;
 const GRASS = 0x8da85a;
+const GRASS_MASK = 0x7fbf4a;
 const RED = 0xd3543c;
 const BLUE = 0x3d7ea6;
 
@@ -29,6 +32,12 @@ export class BattleScene extends Phaser.Scene {
   private g!: Phaser.GameObjects.Graphics;
   private title!: Phaser.GameObjects.Text;
   private banner!: Phaser.GameObjects.Text;
+  private kindLabel!: Phaser.GameObjects.Text;
+  private groundSprite!: Phaser.GameObjects.Image;
+  private groundKey = "terrain-mask";
+  private paintedMask: TerrainMask | null = null;
+  private paintedKind = -1;
+  private paintTimer = 0;
   private left!: Phaser.Input.Keyboard.Key;
   private right!: Phaser.Input.Keyboard.Key;
   private up!: Phaser.Input.Keyboard.Key;
@@ -50,17 +59,28 @@ export class BattleScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.g = this.add.graphics();
+    if (this.textures.exists(this.groundKey)) this.textures.remove(this.groundKey);
+    const canvas = this.textures.createCanvas(this.groundKey, WORLD_W, WORLD_H);
+    if (canvas) canvas.refresh();
+    this.groundSprite = this.add.image(0, 0, this.groundKey).setOrigin(0, 0).setVisible(false).setDepth(0);
+    this.g = this.add.graphics().setDepth(1);
     this.title = this.add.text(16, 12, "", {
       fontFamily: "Microsoft YaHei, sans-serif",
       fontSize: "16px",
       color: "#f4efe6",
-    });
+    }).setDepth(2);
+    this.kindLabel = this.add.text(WORLD_W - 16, 12, "", {
+      fontFamily: "Microsoft YaHei, sans-serif",
+      fontSize: "14px",
+      color: "#b9c7d6",
+      backgroundColor: "#101820cc",
+      padding: { x: 8, y: 4 },
+    }).setOrigin(1, 0).setDepth(2);
     this.banner = this.add.text(WORLD_W / 2, 78, "", {
       fontFamily: "Microsoft YaHei, sans-serif",
       fontSize: "28px",
       color: "#ffe08a",
-    }).setOrigin(0.5, 0);
+    }).setOrigin(0.5, 0).setDepth(2);
 
     const kb = this.input.keyboard!;
     const code = Phaser.Input.Keyboard.KeyCodes;
@@ -164,33 +184,158 @@ export class BattleScene extends Phaser.Scene {
     void dt;
   }
 
+  private solidAt(mask: TerrainMask, x: number, y: number): boolean {
+    if (x < 0 || y < 0 || x >= WORLD_W || y >= WORLD_H) return false;
+    const i = y * WORLD_W + x;
+    return (mask[i >> 3] & (1 << (i & 7))) !== 0;
+  }
+
+  private schedulePaint(mask: TerrainMask, kind: number): void {
+    if (this.paintTimer) return;
+    this.paintTimer = window.setTimeout(() => {
+      this.paintTimer = 0;
+      const cur = getState();
+      if (cur.mask !== mask) return;
+      this.paintMask(mask);
+      this.paintedMask = mask;
+      this.paintedKind = kind;
+      if (!this.playing) this.draw();
+    }, 0);
+  }
+
+  private paintMask(mask: TerrainMask): void {
+    const tex = this.textures.get(this.groundKey) as Phaser.Textures.CanvasTexture;
+    const ctx = tex.getContext();
+    const img = ctx.createImageData(WORLD_W, WORLD_H);
+    const data = img.data;
+    const skyR = (SKY_MASK >> 16) & 0xff;
+    const skyG = (SKY_MASK >> 8) & 0xff;
+    const skyB = SKY_MASK & 0xff;
+    const grassR = (GRASS_MASK >> 16) & 0xff;
+    const grassG = (GRASS_MASK >> 8) & 0xff;
+    const grassB = GRASS_MASK & 0xff;
+    const deepR = (GROUND_DEEP >> 16) & 0xff;
+    const deepG = (GROUND_DEEP >> 8) & 0xff;
+    const deepB = GROUND_DEEP & 0xff;
+    const dirtR = (GROUND_MASK >> 16) & 0xff;
+    const dirtG = (GROUND_MASK >> 8) & 0xff;
+    const dirtB = GROUND_MASK & 0xff;
+    for (let y = 0; y < WORLD_H; y++) {
+      const row = y * WORLD_W;
+      for (let x = 0; x < WORLD_W; x++) {
+        const pix = (row + x) * 4;
+        const idx = row + x;
+        const solid = (mask[idx >> 3] & (1 << (idx & 7))) !== 0;
+        if (!solid) {
+          data[pix] = skyR;
+          data[pix + 1] = skyG;
+          data[pix + 2] = skyB;
+          data[pix + 3] = 255;
+          continue;
+        }
+        const above = y > 0 && (mask[(idx - WORLD_W) >> 3] & (1 << ((idx - WORLD_W) & 7))) !== 0;
+        const speck = ((x * 17 + y * 31) & 7) === 0;
+        if (!above) {
+          data[pix] = grassR;
+          data[pix + 1] = grassG;
+          data[pix + 2] = grassB;
+        } else if (y > 8 && (mask[(idx - WORLD_W * 8) >> 3] & (1 << ((idx - WORLD_W * 8) & 7))) !== 0) {
+          data[pix] = deepR - (speck ? 8 : 0);
+          data[pix + 1] = deepG - (speck ? 4 : 0);
+          data[pix + 2] = deepB - (speck ? 2 : 0);
+        } else {
+          data[pix] = dirtR + (speck ? 10 : 0);
+          data[pix + 1] = dirtG + (speck ? 6 : 0);
+          data[pix + 2] = dirtB + (speck ? 2 : 0);
+        }
+        data[pix + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    tex.refresh();
+  }
+
+  private drawMaskApprox(g: Phaser.GameObjects.Graphics, mask: TerrainMask): void {
+    g.fillStyle(GROUND_MASK, 1);
+    g.beginPath();
+    g.moveTo(0, WORLD_H);
+    for (let x = 0; x < WORLD_W; x += 4) {
+      let y = 0;
+      while (y < WORLD_H && !this.solidAt(mask, x, y)) y += 1;
+      g.lineTo(x, y);
+    }
+    g.lineTo(WORLD_W, WORLD_H);
+    g.closePath();
+    g.fillPath();
+    g.lineStyle(2, GRASS_MASK, 1);
+    g.beginPath();
+    for (let x = 0; x < WORLD_W; x += 4) {
+      let y = 0;
+      while (y < WORLD_H && !this.solidAt(mask, x, y)) y += 1;
+      if (x === 0) g.moveTo(0, y);
+      else g.lineTo(x, y);
+    }
+    g.strokePath();
+  }
+
+  private drawHeight(g: Phaser.GameObjects.Graphics, terrain: number[]): void {
+    g.fillStyle(GROUND, 1);
+    g.beginPath();
+    g.moveTo(0, WORLD_H);
+    terrain.forEach((y, i) => {
+      g.lineTo(i * 4, y);
+    });
+    g.lineTo(WORLD_W, WORLD_H);
+    g.closePath();
+    g.fillPath();
+    g.fillStyle(0x5a3a1f, 0.35);
+    g.beginPath();
+    g.moveTo(0, WORLD_H);
+    terrain.forEach((y, i) => {
+      g.lineTo(i * 4, Math.min(WORLD_H, y + 18));
+    });
+    g.lineTo(WORLD_W, WORLD_H);
+    g.closePath();
+    g.fillPath();
+    g.lineStyle(3, GRASS, 1);
+    g.beginPath();
+    terrain.forEach((y, i) => {
+      if (i === 0) g.moveTo(0, y);
+      else g.lineTo(i * 4, y);
+    });
+    g.strokePath();
+  }
+
   private draw(): void {
     const state = getState();
     const g = this.g;
     g.clear();
-    g.fillStyle(SKY, 1);
-    g.fillRect(0, 0, WORLD_W, WORLD_H);
-    g.fillStyle(0xc9854a, 0.35);
-    g.fillCircle(820, 70, 28);
-
-    if (state.terrain.length > 1) {
-      g.fillStyle(GROUND, 1);
-      g.beginPath();
-      g.moveTo(0, WORLD_H);
-      state.terrain.forEach((y, i) => {
-        g.lineTo(i * 4, y);
-      });
-      g.lineTo(WORLD_W, WORLD_H);
-      g.closePath();
-      g.fillPath();
-      g.lineStyle(2, GRASS, 1);
-      g.beginPath();
-      state.terrain.forEach((y, i) => {
-        if (i === 0) g.moveTo(0, y);
-        else g.lineTo(i * 4, y);
-      });
-      g.strokePath();
+    const isMask = state.terrainKind === TERRAIN_MASK && !!(state.mask && state.mask.length > 0);
+    if (isMask && state.mask) {
+      const ready = state.mask === this.paintedMask && state.terrainKind === this.paintedKind;
+      this.groundSprite.setVisible(ready);
+      if (!ready) {
+        g.fillStyle(SKY_MASK, 1);
+        g.fillRect(0, 0, WORLD_W, WORLD_H);
+        this.drawMaskApprox(g, state.mask);
+        this.schedulePaint(state.mask, state.terrainKind);
+      }
+      g.fillStyle(0x6f8fb0, 0.16);
+      g.fillCircle(180, 90, 54);
+      g.fillStyle(0x6f8fb0, 0.1);
+      g.fillCircle(240, 110, 36);
+    } else {
+      this.groundSprite.setVisible(false);
+      g.fillStyle(SKY_HEIGHT, 1);
+      g.fillRect(0, 0, WORLD_W, WORLD_H);
+      g.fillStyle(0xc9854a, 0.35);
+      g.fillCircle(820, 70, 28);
+      if (state.terrain.length > 1) this.drawHeight(g, state.terrain);
     }
+
+    const kind = TERRAIN_KINDS.find((item) => item.id === (state.terrainKind || 1));
+    this.kindLabel.setText(kind ? kind.name : "");
+    this.kindLabel.setColor(isMask ? "#9ddeb0" : "#b9c7d6");
 
     for (const cloud of state.clouds ?? []) {
       g.fillStyle(0x7d5cff, 0.28);

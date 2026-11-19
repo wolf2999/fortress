@@ -20,4 +20,6 @@ return {
 	hitPad = 14,
 	turnSec = 20,
 	turnWait = 10,
+	terrainHeight = 1,
+	terrainMask = 2,
 }

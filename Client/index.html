@@ -52,6 +52,17 @@
           <label>我的坦克 <select id="pick-self"></select></label>
           <label>对方坦克 <select id="pick-foe"></select></label>
         </div>
+        <div class="row" id="bot-map-picks">
+          <span class="hint">地图</span>
+          <button type="button" id="btn-bot-map-1">丘陵</button>
+          <button type="button" id="btn-bot-map-2">峡谷</button>
+        </div>
+        <div class="row" id="bot-kind-picks">
+          <span class="hint">地形</span>
+          <button type="button" id="btn-bot-kind-1">高度列</button>
+          <button type="button" id="btn-bot-kind-2">像素掩码</button>
+        </div>
+        <p id="bot-map-hint" class="hint"></p>
         <div class="row">
           <input id="bot-account" type="text" maxlength="16" value="炮手" placeholder="名字" />
           <input id="bot-password" type="password" maxlength="32" placeholder="密码" />
@@ -88,9 +99,16 @@
         <p id="body-detail" class="hint"></p>
         <p id="room-log" class="hint"></p>
         <div class="row" id="map-picks">
+          <span class="hint">地图</span>
           <button type="button" id="btn-map-1">丘陵</button>
           <button type="button" id="btn-map-2">峡谷</button>
         </div>
+        <div class="row" id="kind-picks">
+          <span class="hint">地形</span>
+          <button type="button" id="btn-kind-1">高度列</button>
+          <button type="button" id="btn-kind-2">像素掩码</button>
+        </div>
+        <p id="map-kind-hint" class="hint"></p>
         <div class="sides">
           <div class="side">
             <h3 id="side-a-title">红方</h3>

@@ -1,11 +1,12 @@
 import { SprotoCodec } from "../net/codec";
 import { NetSocket } from "../net/socket";
-import { MAPS, TURN_SEC, TURN_WAIT } from "../sim/constants";
+import { MAPS, TERRAIN_HEIGHT, TERRAIN_KINDS, TERRAIN_MASK, TURN_SEC, TURN_WAIT } from "../sim/constants";
 import {
   angleWindow,
-  buildTerrain,
   createMatch,
   defaultAngle,
+  makeTerrain,
+  maskByteCount,
   preview,
   resolveExpire,
   resolveFire,
@@ -15,6 +16,7 @@ import {
   type MatchState,
   type ShotPath,
   type Tank,
+  type TerrainMask,
 } from "../sim/rules";
 import { ITEMS } from "../sim/items";
 import { DEFAULT_BODY, fuelMaxOf, weaponsOf } from "../sim/tanks";
@@ -45,6 +47,7 @@ export interface RoomMember {
 export interface RoomBrief {
   roomId: number;
   mapId: number;
+  terrainKind: number;
   phase: string;
   count: number;
   red: number;
@@ -56,6 +59,7 @@ export interface RoomBrief {
 export interface RoomView {
   roomId: number;
   mapId: number;
+  terrainKind: number;
   phase: string;
   you: number;
   log: string;
@@ -91,6 +95,10 @@ let state: MatchState = createMatch(1, ["红方", "蓝方"]);
 let localBodies: [number, number] = [DEFAULT_BODY, DEFAULT_BODY];
 let onlineBody = DEFAULT_BODY;
 let onlineBotBody = DEFAULT_BODY;
+let pickMapId = 1;
+let pickTerrainKind = TERRAIN_HEIGHT;
+let localMapId = 1;
+let localTerrainKind = TERRAIN_HEIGHT;
 let queue: Flight[] = [];
 let socket: NetSocket | null = null;
 let codec: SprotoCodec | null = null;
@@ -297,7 +305,23 @@ function note(log: string): void {
   emit();
 }
 
-export function bootLocal(red = localBodies[0], blue = localBodies[1]): void {
+export function getPickMapId(): number {
+  return pickMapId;
+}
+
+export function getPickTerrainKind(): number {
+  return pickTerrainKind;
+}
+
+export function setPickMap(mapId: number, terrainKind?: number): void {
+  if (MAPS.some((item) => item.id === mapId)) pickMapId = mapId;
+  if (terrainKind !== undefined && TERRAIN_KINDS.some((item) => item.id === terrainKind)) {
+    pickTerrainKind = terrainKind;
+  }
+  emit();
+}
+
+export function bootLocal(red = localBodies[0], blue = localBodies[1], mapId = pickMapId, terrainKind = pickTerrainKind): void {
   closeSocket();
   pending.clear();
   queue = [];
@@ -307,9 +331,13 @@ export function bootLocal(red = localBodies[0], blue = localBodies[1]): void {
   notice = "";
   sendLock = false;
   localBodies = [red || DEFAULT_BODY, blue || DEFAULT_BODY];
+  localMapId = MAPS.some((item) => item.id === mapId) ? mapId : 1;
+  localTerrainKind = TERRAIN_KINDS.some((item) => item.id === terrainKind) ? terrainKind : TERRAIN_HEIGHT;
+  pickMapId = localMapId;
+  pickTerrainKind = localTerrainKind;
   localBags = [freshKit(), freshKit()];
   const seed = Math.floor(Date.now() % 100000) + 1;
-  state = createMatch(seed, ["红方", "蓝方"], localBodies);
+  state = createMatch(seed, ["红方", "蓝方"], localBodies, localMapId, localTerrainKind);
   for (const tank of state.tanks) fitAim(tank.seat, true);
   emit();
 }
@@ -422,15 +450,20 @@ let lastName = "炮手";
 let lastPassword = "";
 let authedName = "";
 
+function hasTerrain(match: MatchState): boolean {
+  if (match.terrainKind === TERRAIN_MASK) return !!(match.mask && match.mask.length >= maskByteCount());
+  return match.terrain.length > 10;
+}
+
 function waitForMatch(ms: number): Promise<void> {
-  if (state.matchId > 0 && state.terrain.length > 10) return Promise.resolve();
+  if (state.matchId > 0 && hasTerrain(state)) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
       off();
       reject(new Error("没有收到对局"));
     }, ms);
     const off = subscribe(() => {
-      if (state.matchId > 0 && state.terrain.length > 10) {
+      if (state.matchId > 0 && hasTerrain(state)) {
         window.clearTimeout(timer);
         off();
         resolve();
@@ -449,7 +482,13 @@ export async function connectOnline(name: string, body = onlineBody, botBody = o
     onlineBody = body || DEFAULT_BODY;
     onlineBotBody = botBody || DEFAULT_BODY;
     await ensureOnline(name, password);
-    const join = await request("csJoinBattle", { nonce: 1, body: onlineBody, botBody: onlineBotBody });
+    const join = await request("csJoinBattle", {
+      nonce: 1,
+      body: onlineBody,
+      botBody: onlineBotBody,
+      mapId: pickMapId,
+      terrainKind: pickTerrainKind,
+    });
     if (num(join.ok) !== 1) throw new Error(String(join.msg || "加入失败"));
     await waitForMatch(3000);
     note(String(join.msg || "已连接"));
@@ -506,11 +545,16 @@ export async function joinRoom(name: string, roomId: number, password?: string):
   }
 }
 
-export async function selectMap(mapId: number): Promise<void> {
+export async function selectMap(mapId: number, terrainKind?: number): Promise<void> {
   const mine = room?.members.find((m) => m.seat === room?.you);
   if (!room || mine?.host !== 1 || room.phase !== "lobby") return;
+  const nextMap = MAPS.some((item) => item.id === mapId) ? mapId : room.mapId;
+  const nextKind =
+    terrainKind !== undefined && TERRAIN_KINDS.some((item) => item.id === terrainKind)
+      ? terrainKind
+      : room.terrainKind || TERRAIN_HEIGHT;
   try {
-    const res = await request("csSelectMap", { mapId });
+    const res = await request("csSelectMap", { mapId: nextMap, terrainKind: nextKind });
     if (num(res.ok) !== 1) {
       notice = String(res.msg || "换地图失败");
       emit();
@@ -762,6 +806,7 @@ function applyRoomList(raw: Record<string, unknown>): void {
     .map((item) => ({
       roomId: num(item.roomId),
       mapId: num(item.mapId, 1),
+      terrainKind: num(item.terrainKind, TERRAIN_HEIGHT),
       phase: String(item.phase || "lobby"),
       count: num(item.count),
       red: num(item.red),
@@ -787,6 +832,8 @@ function applyRoom(raw: Record<string, unknown>): void {
   if (next.phase === "lobby") {
     screen = "room";
     const map = MAPS.find((item) => item.id === next.mapId);
+    const kind = TERRAIN_KINDS.find((item) => item.id === next.terrainKind);
+    const made = makeTerrain(next.roomId * 17, next.mapId, next.terrainKind || TERRAIN_HEIGHT);
     state = {
       rev: 0,
       matchId: -1,
@@ -795,8 +842,10 @@ function applyRoom(raw: Record<string, unknown>): void {
       turn: 0,
       winner: -1,
       phase: "preview",
-      log: map ? `${map.name} · ${map.blurb}` : "地图",
-      terrain: buildTerrain(next.roomId * 17, next.mapId),
+      log: [map?.name, kind?.name, map?.blurb, kind?.blurb].filter(Boolean).join(" · "),
+      terrainKind: made.terrainKind,
+      terrain: made.terrain,
+      mask: made.mask,
       tanks: [],
       crates: [],
       mines: [],
@@ -813,6 +862,7 @@ function readRoom(raw: Record<string, unknown>): RoomView {
   return {
     roomId: num(raw.roomId),
     mapId: num(raw.mapId, 1),
+    terrainKind: num(raw.terrainKind, TERRAIN_HEIGHT),
     phase: String(raw.phase || "lobby"),
     you: num(raw.you),
     log: String(raw.log || ""),
@@ -878,8 +928,23 @@ function readTank(raw: Record<string, unknown>): Tank {
   };
 }
 
+function readMask(v: unknown): TerrainMask | undefined {
+  if (v instanceof Uint8Array) return v.length > 0 ? v : undefined;
+  if (typeof ArrayBuffer !== "undefined" && v instanceof ArrayBuffer) {
+    return v.byteLength > 0 ? new Uint8Array(v) : undefined;
+  }
+  if (typeof v === "string" && v.length > 0) {
+    const out = new Uint8Array(v.length);
+    for (let i = 0; i < v.length; i++) out[i] = v.charCodeAt(i) & 0xff;
+    return out;
+  }
+  return undefined;
+}
+
 function readState(raw: Record<string, unknown>): MatchState {
   const tanks = objList(raw.tanks).map(readTank).sort((a, b) => a.seat - b.seat);
+  const terrainKind = num(raw.terrainKind, TERRAIN_HEIGHT);
+  const mask = readMask(raw.mask);
   return {
     rev: num(raw.rev),
     matchId: num(raw.matchId),
@@ -889,7 +954,9 @@ function readState(raw: Record<string, unknown>): MatchState {
     winner: num(raw.winner, -1),
     phase: String(raw.phase || "aim"),
     log: String(raw.log || ""),
+    terrainKind,
     terrain: numList(raw.terrain),
+    mask: terrainKind === TERRAIN_MASK ? mask : undefined,
     tanks,
     crates: objList(raw.crates).map((item) => ({ x: num(item.x), y: num(item.y) })),
     mines: objList(raw.mines).map((item) => ({ x: num(item.x), y: num(item.y) })),

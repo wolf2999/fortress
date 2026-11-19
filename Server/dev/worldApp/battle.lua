@@ -1,6 +1,7 @@
 --[[
   对局服务。
   房间：建房、选坦克、选地图、准备、房主开始。地图 1 丘陵、2 峡谷。
+  地形方式：1 高度列、2 像素掩码。
   人机测试仍走 csJoinBattle：一人时座位 1 是机器人，第二个人进来会换掉机器人。
 ]]
 local skynet = require("skynet")
@@ -18,6 +19,7 @@ local rooms = {}
 local next_id = 1
 local next_room = 1001
 local MAP_NAME = { [1] = "丘陵", [2] = "峡谷" }
+local KIND_NAME = { [1] = "高度列", [2] = "像素掩码" }
 
 local function push(fd, name, args)
 	cc.send("gateApp", "gate", "push", fd, name, args)
@@ -117,6 +119,8 @@ local function state_msg(match, you)
 		mines = mines_msg(match),
 		clouds = clouds_msg(match),
 		clock = clock_left(match),
+		terrainKind = match.terrainKind or C.terrainHeight,
+		mask = rules.mask_pack(match.mask),
 	}
 end
 
@@ -180,7 +184,7 @@ local function find_open()
 	return nil
 end
 
-local function spawn_tank(seat, fd, uid, name, bot, terrain, team, x, bodyId)
+local function spawn_tank(seat, fd, uid, name, bot, terrain, team, x, bodyId, mask)
 	if team == nil then
 		team = seat == 0 and 0 or 1
 	end
@@ -199,7 +203,7 @@ local function spawn_tank(seat, fd, uid, name, bot, terrain, team, x, bodyId)
 		alive = 1,
 	}
 	rules.apply_body(tank, bodyId)
-	rules.place(tank, terrain, false)
+	rules.place(tank, terrain, false, mask)
 	if bot == 1 then
 		-- 与本地双人的随身数量相同，不花 CRING，也不计入胜场花费。
 		tank.kit = { [1] = 3, [2] = 2, [3] = 1 }
@@ -267,7 +271,7 @@ local function best_shot(match, tank, weapon, wind)
 			for _, aim in ipairs(aim_angles(ang, weapon)) do
 				local a = rules.clamp_angle(aim)
 				local x0, y0 = rules.muzzle(tank, a)
-				local tr = rules.trace(match.terrain, x0, y0, a, pow, wind, weapon.speed or 1)
+				local tr = rules.trace(match.terrain, x0, y0, a, pow, wind, weapon.speed or 1, match.mask)
 				if tr.hit == 1 then
 					local dx = tr.hitX - fx
 					local dy = tr.hitY - fy
@@ -302,13 +306,26 @@ local function step_lands(match, tank, nx, y, fuel)
 	if nx < 16 or nx + C.tankW > C.worldW - 16 then
 		return nil
 	end
-	local ground = rules.surface_at(match.terrain, nx + C.tankW / 2)
+	local ground = rules.surface_at(match.terrain, nx + C.tankW / 2, match.mask)
 	if ground >= C.worldH - 2 then
 		return nil
 	end
 	local ny = ground - C.tankH
 	if ny - y > 36 then
 		return nil
+	end
+	if match.mask and #match.mask > 0 then
+		local x0 = math.floor(nx)
+		local y0 = math.floor(ny)
+		local x1 = math.floor(nx + C.tankW - 1)
+		local y1 = math.floor(ny + C.tankH - 1)
+		for py = y0, y1 do
+			for px = x0, x1 do
+				if rules.mask_solid(match.mask, px, py) then
+					return nil
+				end
+			end
+		end
 	end
 	for _, mine in ipairs(match.mines or {}) do
 		if not mine.gone then
@@ -580,11 +597,21 @@ schedule_bot = function(match)
 	arm_bot(match, 150, false)
 end
 
-local function create_match(fd, uid, name, bodyId, botBody)
+local function create_match(fd, uid, name, bodyId, botBody, mapId, terrainKind)
 	local id = next_id
 	next_id = next_id + 1
 	local seed = os.time() + id * 17
-	local terrain = rules.build_terrain(seed)
+	mapId = math.floor(tonumber(mapId) or 1)
+	if not MAP_NAME[mapId] then
+		mapId = 1
+	end
+	terrainKind = math.floor(tonumber(terrainKind) or C.terrainHeight)
+	if not KIND_NAME[terrainKind] then
+		terrainKind = C.terrainHeight
+	end
+	local made = rules.make_terrain(seed, mapId, terrainKind)
+	local terrain = made.terrain
+	local mask = made.mask
 	local match = {
 		id = id,
 		rev = 1,
@@ -593,16 +620,19 @@ local function create_match(fd, uid, name, bodyId, botBody)
 		winner = -1,
 		phase = "aim",
 		log = name .. " 先手",
+		mapId = mapId,
+		terrainKind = made.terrainKind,
 		terrain = terrain,
+		mask = mask,
 		seats = {},
 		bot_token = 0,
-		boxes = rules.place_boxes(terrain),
+		boxes = rules.place_boxes(terrain, mask),
 		mines = {},
 		clouds = {},
 		spent = 0,
 	}
-	match.seats[0] = spawn_tank(0, fd, uid, name, 0, terrain, nil, nil, bodyId)
-	match.seats[1] = spawn_tank(1, nil, 0, "BOT", 1, terrain, nil, nil, botBody)
+	match.seats[0] = spawn_tank(0, fd, uid, name, 0, terrain, nil, nil, bodyId, mask)
+	match.seats[1] = spawn_tank(1, nil, 0, "BOT", 1, terrain, nil, nil, botBody, mask)
 	matches[id] = match
 	by_fd[fd] = { id = id, seat = 0 }
 	return match
@@ -656,6 +686,7 @@ local function room_msg(room, you)
 		you = you,
 		log = room.log or "",
 		members = room_members_msg(room),
+		terrainKind = room.terrainKind or C.terrainHeight,
 	}
 end
 
@@ -732,7 +763,9 @@ local function start_block(room)
 end
 
 local function begin_room_match(room)
-	local terrain = rules.build_terrain(room.id * 17, room.mapId)
+	local made = rules.make_terrain(room.id * 17, room.mapId, room.terrainKind or C.terrainHeight)
+	local terrain = made.terrain
+	local mask = made.mask
 	local match = {
 		id = room.id,
 		rev = 1,
@@ -741,11 +774,14 @@ local function begin_room_match(room)
 		winner = -1,
 		phase = "aim",
 		log = "",
+		mapId = room.mapId,
+		terrainKind = made.terrainKind,
 		terrain = terrain,
+		mask = mask,
 		seats = {},
 		bot_token = 0,
 		room = room,
-		boxes = rules.place_boxes(terrain),
+		boxes = rules.place_boxes(terrain, mask),
 		mines = {},
 		clouds = {},
 		spent = 0,
@@ -758,7 +794,7 @@ local function begin_room_match(room)
 			local index = used[m.team]
 			used[m.team] = index + 1
 			local x = m.team == 0 and (64 + index * 72) or (C.worldW - 64 - C.tankW - index * 72)
-			match.seats[seat] = spawn_tank(seat, m.fd, m.uid, m.name, 0, terrain, m.team, x, m.body)
+			match.seats[seat] = spawn_tank(seat, m.fd, m.uid, m.name, 0, terrain, m.team, x, m.body, mask)
 			if not first then
 				first = seat
 			end
@@ -910,6 +946,7 @@ local function create_room(fd, acc, uid)
 	local room = {
 		id = id,
 		mapId = 1,
+		terrainKind = C.terrainHeight,
 		phase = "lobby",
 		log = "等待对手进入",
 		members = {},
@@ -955,6 +992,7 @@ local function room_brief(room)
 		blue = side_count(room, 1),
 		host = host,
 		ready = ready,
+		terrainKind = room.terrainKind or C.terrainHeight,
 	}
 end
 
@@ -1065,7 +1103,7 @@ local function join_room(fd, acc, roomId, uid)
 	return { ok = 1, roomId = roomId, msg = "已加入房间" }
 end
 
-local function select_map(fd, mapId)
+local function select_map(fd, mapId, terrainKind)
 	local link = by_fd[fd]
 	if not link or not link.room then
 		return { ok = 0, msg = "不在房间" }
@@ -1078,13 +1116,18 @@ local function select_map(fd, mapId)
 	if room.phase ~= "lobby" then
 		return { ok = 0, msg = "对局中不能换地图" }
 	end
-	mapId = math.floor(tonumber(mapId) or 0)
+	mapId = math.floor(tonumber(mapId) or room.mapId or 1)
+	terrainKind = math.floor(tonumber(terrainKind) or room.terrainKind or C.terrainHeight)
 	if not MAP_NAME[mapId] then
 		return { ok = 0, msg = "没有这张地图" }
 	end
+	if not KIND_NAME[terrainKind] then
+		return { ok = 0, msg = "没有这种地形" }
+	end
 	room.mapId = mapId
+	room.terrainKind = terrainKind
 	clear_ready(room)
-	room.log = "地图换成「" .. MAP_NAME[mapId] .. "」"
+	room.log = "地图换成「" .. MAP_NAME[mapId] .. " · " .. KIND_NAME[terrainKind] .. "」"
 	broadcast_room(room)
 	return { ok = 1, msg = room.log }
 end
@@ -1340,7 +1383,7 @@ local function join(fd, acc, args, uid)
 	end
 
 	args = args or {}
-	local match = create_match(fd, uid, name, args.body, args.botBody)
+	local match = create_match(fd, uid, name, args.body, args.botBody, args.mapId, args.terrainKind)
 	note_turn(match)
 	broadcast_state(match)
 	push_bag(fd, uid)
@@ -1401,7 +1444,7 @@ local function handle(name, args, fd, acc, uid)
 		return use_item(fd, uid, args.slot)
 	end
 	if name == "csSelectMap" then
-		return select_map(fd, args.mapId)
+		return select_map(fd, args.mapId, args.terrainKind)
 	end
 	if name == "csSelectTeam" then
 		return select_team(fd, args.team)

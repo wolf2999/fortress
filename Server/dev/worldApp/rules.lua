@@ -4,7 +4,8 @@
 
   弹道是 Atomic Cannon 线性风力模型的一个子集：
   先加重力，再加水平风力，最后用新速度推进一步。
-  不含阵风、垂直风、空气阻力、像素级掩码地形。
+  不含阵风、垂直风、空气阻力。
+  地形两种：高度列（默认）和像素掩码（可挖空洞）。
 ]]
 local C = require("constants")
 local Weapons = require("weapons")
@@ -14,8 +15,68 @@ local Items = require("items")
 local M = {}
 
 local COLS = math.floor(C.worldW / C.colW)
+local MASK_BYTES = math.ceil((C.worldW * C.worldH) / 8)
 
-function M.surface_at(terrain, x)
+local function pack_bytes(bytes)
+	local n = #bytes
+	if n == 0 then
+		return ""
+	end
+	local parts = {}
+	local step = 4096
+	for i = 1, n, step do
+		local j = math.min(i + step - 1, n)
+		parts[#parts + 1] = string.char(table.unpack(bytes, i, j))
+	end
+	return table.concat(parts)
+end
+
+local function unpack_bytes(bin)
+	local bytes = {}
+	if not bin or bin == "" then
+		return bytes
+	end
+	for i = 1, #bin do
+		bytes[i] = string.byte(bin, i)
+	end
+	return bytes
+end
+
+function M.mask_byte_count()
+	return MASK_BYTES
+end
+
+function M.mask_solid(mask, x, y)
+	local px = math.floor(x)
+	local py = math.floor(y)
+	if px < 0 or py < 0 or px >= C.worldW or py >= C.worldH then
+		return false
+	end
+	local i = py * C.worldW + px
+	local bi = math.floor(i / 8) + 1
+	local bit = i % 8
+	local b = mask[bi] or 0
+	return (b & (1 << bit)) ~= 0
+end
+
+function M.mask_set(mask, x, y, on)
+	local px = math.floor(x)
+	local py = math.floor(y)
+	if px < 0 or py < 0 or px >= C.worldW or py >= C.worldH then
+		return
+	end
+	local i = py * C.worldW + px
+	local bi = math.floor(i / 8) + 1
+	local bit = 1 << (i % 8)
+	local b = mask[bi] or 0
+	if on then
+		mask[bi] = b | bit
+	else
+		mask[bi] = b & (~bit & 0xFF)
+	end
+end
+
+local function surface_at_height(terrain, x)
 	local i = math.floor(x / C.colW) + 1
 	if i < 1 then
 		i = 1
@@ -24,6 +85,29 @@ function M.surface_at(terrain, x)
 		i = #terrain
 	end
 	return terrain[i]
+end
+
+local function surface_at_mask(mask, x)
+	local px = math.floor(x)
+	if px < 0 then
+		px = 0
+	end
+	if px >= C.worldW then
+		px = C.worldW - 1
+	end
+	for y = 0, C.worldH - 1 do
+		if M.mask_solid(mask, px, y) then
+			return y
+		end
+	end
+	return C.worldH
+end
+
+function M.surface_at(terrain, x, mask)
+	if mask and #mask > 0 then
+		return surface_at_mask(mask, x)
+	end
+	return surface_at_height(terrain, x)
 end
 
 function M.build_terrain(seed, mapId)
@@ -59,6 +143,73 @@ function M.build_terrain(seed, mapId)
 	return terrain
 end
 
+function M.heights_to_mask(terrain)
+	local mask = {}
+	for i = 1, MASK_BYTES do
+		mask[i] = 0
+	end
+	for i = 1, #terrain do
+		local x0 = (i - 1) * C.colW
+		local x1 = math.min(C.worldW, x0 + C.colW)
+		local top = terrain[i]
+		if top < 0 then
+			top = 0
+		end
+		if top > C.worldH then
+			top = C.worldH
+		end
+		for x = x0, x1 - 1 do
+			for y = top, C.worldH - 1 do
+				M.mask_set(mask, x, y, true)
+			end
+		end
+	end
+	return mask
+end
+
+function M.make_terrain(seed, mapId, terrainKind)
+	mapId = mapId or 1
+	terrainKind = math.floor(tonumber(terrainKind) or C.terrainHeight)
+	local heights = M.build_terrain(seed, mapId)
+	if terrainKind == C.terrainMask then
+		return {
+			terrainKind = C.terrainMask,
+			terrain = {},
+			mask = M.heights_to_mask(heights),
+		}
+	end
+	return {
+		terrainKind = C.terrainHeight,
+		terrain = heights,
+		mask = nil,
+	}
+end
+
+function M.mask_pack(mask)
+	if not mask or #mask == 0 then
+		return ""
+	end
+	return pack_bytes(mask)
+end
+
+function M.mask_unpack(bin)
+	if not bin or bin == "" then
+		return nil
+	end
+	return unpack_bytes(bin)
+end
+
+function M.clone_mask(mask)
+	if not mask then
+		return nil
+	end
+	local out = {}
+	for i = 1, #mask do
+		out[i] = mask[i]
+	end
+	return out
+end
+
 function M.launch_speed(power, speedScale)
 	return power * speedScale * math.sqrt(C.worldW / C.launchRef)
 end
@@ -87,7 +238,7 @@ local function sample(xs, ys)
 	return ox, oy
 end
 
-function M.trace(terrain, x0, y0, angle, power, wind, speedScale)
+function M.trace(terrain, x0, y0, angle, power, wind, speedScale, mask)
 	local rad = math.rad(angle)
 	local speed = M.launch_speed(power, speedScale)
 	local x, y = x0, y0
@@ -96,7 +247,9 @@ function M.trace(terrain, x0, y0, angle, power, wind, speedScale)
 	local xs, ys = { x }, { y }
 	local steps = math.floor(C.maxLife / C.dt)
 	local hit, hitX, hitY = 0, x, y
+	local use_mask = mask and #mask > 0
 	for _ = 1, steps do
+		local ox, oy = x, y
 		vy = vy + C.gravity * C.dt
 		vx = vx + wind * C.windAccel * C.dt
 		x = x + vx * C.dt
@@ -112,9 +265,30 @@ function M.trace(terrain, x0, y0, angle, power, wind, speedScale)
 			hit, hitX, hitY = 1, x, C.worldH
 			break
 		end
-		if dist >= 18 and y >= M.surface_at(terrain, x) then
-			hit, hitX, hitY = 1, x, y
-			break
+		if dist < 18 then
+			-- keep going
+		elseif not use_mask then
+			if y >= surface_at_height(terrain, x) then
+				hit, hitX, hitY = 1, x, y
+				break
+			end
+		else
+			local span = math.sqrt((x - ox) * (x - ox) + (y - oy) * (y - oy))
+			local parts = math.max(1, math.ceil(span))
+			local struck = false
+			for p = 1, parts do
+				local t = p / parts
+				local sx = ox + (x - ox) * t
+				local sy = oy + (y - oy) * t
+				if M.mask_solid(mask, sx, sy) then
+					hit, hitX, hitY = 1, sx, sy
+					struck = true
+					break
+				end
+			end
+			if struck then
+				break
+			end
 		end
 	end
 	local ox, oy = sample(xs, ys)
@@ -127,7 +301,7 @@ function M.trace(terrain, x0, y0, angle, power, wind, speedScale)
 	}
 end
 
-function M.apply_blast(terrain, cx, cy, radius, kind)
+local function apply_blast_height(terrain, cx, cy, radius, kind)
 	local r2 = radius * radius
 	local i0 = math.floor((cx - radius) / C.colW) + 1
 	local i1 = math.floor((cx + radius) / C.colW) + 1
@@ -162,9 +336,51 @@ function M.apply_blast(terrain, cx, cy, radius, kind)
 	end
 end
 
-function M.place(tank, terrain, fall)
+local function apply_blast_mask(mask, cx, cy, radius, kind)
+	local r = math.max(1, math.floor(radius))
+	local r2 = radius * radius
+	local x0 = math.max(0, math.floor(cx - r))
+	local x1 = math.min(C.worldW - 1, math.ceil(cx + r))
+	local y0 = math.max(0, math.floor(cy - r))
+	local y1 = math.min(C.worldH - 1, math.ceil(cy + r))
+	local fill = kind == "fill"
+	for y = y0, y1 do
+		for x = x0, x1 do
+			local dx = x + 0.5 - cx
+			local dy = y + 0.5 - cy
+			if dx * dx + dy * dy <= r2 then
+				M.mask_set(mask, x, y, fill)
+			end
+		end
+	end
+end
+
+function M.apply_blast(terrain, cx, cy, radius, kind, mask)
+	if mask and #mask > 0 then
+		apply_blast_mask(mask, cx, cy, radius, kind)
+	else
+		apply_blast_height(terrain, cx, cy, radius, kind)
+	end
+end
+
+local function body_blocked(mask, x, y)
+	local x0 = math.floor(x)
+	local y0 = math.floor(y)
+	local x1 = math.floor(x + C.tankW - 1)
+	local y1 = math.floor(y + C.tankH - 1)
+	for py = y0, y1 do
+		for px = x0, x1 do
+			if M.mask_solid(mask, px, py) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function M.place(tank, terrain, fall, mask)
 	local oldY = tank.y
-	local ground = M.surface_at(terrain, tank.x + C.tankW / 2)
+	local ground = M.surface_at(terrain, tank.x + C.tankW / 2, mask)
 	tank.y = ground - C.tankH
 	if tank.y > C.worldH - C.tankH then
 		tank.hp = 0
@@ -392,10 +608,10 @@ local function shot_damage(tank, weapon)
 	return dmg
 end
 
-function M.place_boxes(terrain)
+function M.place_boxes(terrain, mask)
 	local boxes = {}
 	for _, x in ipairs({ 280, 680 }) do
-		local ground = M.surface_at(terrain, x)
+		local ground = M.surface_at(terrain, x, mask)
 		if ground < C.worldH - 8 then
 			boxes[#boxes + 1] = { x = x, y = ground - 8 }
 		end
@@ -570,7 +786,7 @@ local function detonate_mine(match, mine, trigger)
 	mine.gone = true
 	local dmg = mine.damage or 320
 	local radius = mine.radius or 30
-	M.apply_blast(match.terrain, mine.x, mine.y, radius, "dig")
+	M.apply_blast(match.terrain, mine.x, mine.y, radius, "dig", match.mask)
 	for i = 0, 7 do
 		if match.seats[i] then
 			hurt(match.seats[i], mine.x, mine.y, radius, dmg)
@@ -589,7 +805,7 @@ local function settle_ground(match)
 		local boom = false
 		for _, mine in ipairs(match.mines) do
 			if not mine.gone then
-				local ground = M.surface_at(match.terrain, mine.x)
+				local ground = M.surface_at(match.terrain, mine.x, match.mask)
 				if ground >= C.worldH - 2 then
 					mine.gone = true
 				else
@@ -617,7 +833,7 @@ local function settle_ground(match)
 		end
 		for i = 0, 7 do
 			if match.seats[i] then
-				M.place(match.seats[i], match.terrain, true)
+				M.place(match.seats[i], match.terrain, true, match.mask)
 			end
 		end
 		collect_standing(match)
@@ -794,7 +1010,7 @@ function M.fire(match, seat, angle, power, weaponId, nextWind, thinkSec)
 		for _, ang in ipairs(shot_angles(angle, weapon)) do
 			local a = M.clamp_angle(ang)
 			local x0, y0 = M.muzzle(tank, a)
-			local tr = M.trace(match.terrain, x0, y0, a, power, match.wind, weapon.speed)
+			local tr = M.trace(match.terrain, x0, y0, a, power, match.wind, weapon.speed, match.mask)
 			tr.radius = effect == "mine" and 0 or weapon.radius
 			tr.weapon = weapon.id
 			traces[#traces + 1] = tr
@@ -813,14 +1029,14 @@ function M.fire(match, seat, angle, power, weaponId, nextWind, thinkSec)
 				if effect == "mine" then
 					local mine = {
 						x = tr.hitX,
-						y = M.surface_at(match.terrain, tr.hitX) - 6,
+						y = M.surface_at(match.terrain, tr.hitX, match.mask) - 6,
 						damage = damage,
 						radius = weapon.radius,
 					}
 					match.mines[#match.mines + 1] = mine
 					planted[#planted + 1] = { mine = mine, shot = shots[#shots - #traces + n] }
 				else
-					M.apply_blast(match.terrain, tr.hitX, tr.hitY, weapon.radius, kind)
+					M.apply_blast(match.terrain, tr.hitX, tr.hitY, weapon.radius, kind, match.mask)
 					for i = 0, 7 do
 						local other = match.seats[i]
 						if other then
@@ -852,7 +1068,7 @@ function M.fire(match, seat, angle, power, weaponId, nextWind, thinkSec)
 	end
 	for i = 0, 7 do
 		if match.seats[i] then
-			M.place(match.seats[i], match.terrain, true)
+			M.place(match.seats[i], match.terrain, true, match.mask)
 		end
 	end
 	collect_standing(match)
@@ -960,14 +1176,17 @@ function M.move(match, seat, dir)
 	if nx < 16 or nx + C.tankW > C.worldW - 16 then
 		return false, "到头了，换个方向或开炮"
 	end
-	local ground = M.surface_at(match.terrain, nx + C.tankW / 2)
+	local ground = M.surface_at(match.terrain, nx + C.tankW / 2, match.mask)
 	if ground >= C.worldH - 2 then
 		return false, "前面是坑"
+	end
+	if match.mask and #match.mask > 0 and body_blocked(match.mask, nx, ground - C.tankH) then
+		return false, "前面有土挡着"
 	end
 	tank.x = nx
 	tank.fuel = tank.fuel - C.moveCost
 	tank.wait = (tank.wait or 0) + 10
-	M.place(tank, match.terrain, true)
+	M.place(tank, match.terrain, true, match.mask)
 	match.crate_note = nil
 	match.mine_note = nil
 	collect_standing(match)

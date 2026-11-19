@@ -25,6 +25,7 @@ local function list_msg()
 			blue = brief.blue,
 			host = brief.host or "",
 			ready = brief.ready or 0,
+			terrainKind = brief.terrainKind or 1,
 		}
 	end
 	return { rooms = rooms }

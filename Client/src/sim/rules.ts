@@ -19,6 +19,8 @@ import {
   MUZZLE,
   TANK_H,
   TANK_W,
+  TERRAIN_HEIGHT,
+  TERRAIN_MASK,
   TURN_SEC,
   TURN_WAIT,
   WIND_ACCEL,
@@ -29,6 +31,13 @@ import {
 } from "./constants";
 import { itemById } from "./items";
 import { fuelMaxOf, tankById, weaponOf, weaponsOf } from "./tanks";
+
+/** 位图：每像素 1 bit，1 是土。长度 ceil(960×540/8)。 */
+export type TerrainMask = Uint8Array;
+
+export function maskByteCount(): number {
+  return Math.ceil((WORLD_W * WORLD_H) / 8);
+}
 
 export interface Tank {
   seat: number;
@@ -80,7 +89,9 @@ export interface MatchState {
   winner: number;
   phase: string;
   log: string;
+  terrainKind: number;
   terrain: number[];
+  mask?: TerrainMask;
   tanks: Tank[];
   crates: Crate[];
   mines: Mine[];
@@ -102,11 +113,43 @@ function launchSpeed(power: number, speedScale: number): number {
   return power * speedScale * Math.sqrt(WORLD_W / LAUNCH_REF);
 }
 
-export function surfaceAt(terrain: number[], x: number): number {
+export function maskSolid(mask: TerrainMask, x: number, y: number): boolean {
+  const px = Math.floor(x);
+  const py = Math.floor(y);
+  if (px < 0 || py < 0 || px >= WORLD_W || py >= WORLD_H) return false;
+  const i = py * WORLD_W + px;
+  return (mask[i >> 3] & (1 << (i & 7))) !== 0;
+}
+
+export function maskSet(mask: TerrainMask, x: number, y: number, on: boolean): void {
+  const px = Math.floor(x);
+  const py = Math.floor(y);
+  if (px < 0 || py < 0 || px >= WORLD_W || py >= WORLD_H) return;
+  const i = py * WORLD_W + px;
+  const byte = i >> 3;
+  const bit = 1 << (i & 7);
+  if (on) mask[byte] |= bit;
+  else mask[byte] &= ~bit;
+}
+
+function surfaceAtHeight(terrain: number[], x: number): number {
   let i = Math.floor(x / COL_W);
   if (i < 0) i = 0;
   if (i >= terrain.length) i = terrain.length - 1;
   return terrain[i];
+}
+
+function surfaceAtMask(mask: TerrainMask, x: number): number {
+  const px = Math.max(0, Math.min(WORLD_W - 1, Math.floor(x)));
+  for (let y = 0; y < WORLD_H; y++) {
+    if (maskSolid(mask, px, y)) return y;
+  }
+  return WORLD_H;
+}
+
+export function surfaceAt(terrain: number[], x: number, mask?: TerrainMask | null): number {
+  if (mask && mask.length > 0) return surfaceAtMask(mask, x);
+  return surfaceAtHeight(terrain, x);
 }
 
 export function buildTerrain(seed: number, mapId = 1): number[] {
@@ -134,6 +177,36 @@ export function buildTerrain(seed: number, mapId = 1): number[] {
   return terrain;
 }
 
+/** 按高度列灌满土，得到可挖空洞的掩码。 */
+export function heightsToMask(terrain: number[]): TerrainMask {
+  const mask = new Uint8Array(maskByteCount());
+  for (let i = 0; i < terrain.length; i++) {
+    const x0 = i * COL_W;
+    const x1 = Math.min(WORLD_W, x0 + COL_W);
+    const top = Math.max(0, Math.min(WORLD_H, terrain[i]));
+    for (let y = top; y < WORLD_H; y++) {
+      const row = y * WORLD_W;
+      for (let x = x0; x < x1; x++) {
+        const idx = row + x;
+        mask[idx >> 3] |= 1 << (idx & 7);
+      }
+    }
+  }
+  return mask;
+}
+
+export function makeTerrain(
+  seed: number,
+  mapId = 1,
+  terrainKind = TERRAIN_HEIGHT,
+): { terrainKind: number; terrain: number[]; mask?: TerrainMask } {
+  const terrain = buildTerrain(seed, mapId);
+  if (terrainKind === TERRAIN_MASK) {
+    return { terrainKind: TERRAIN_MASK, terrain: [], mask: heightsToMask(terrain) };
+  }
+  return { terrainKind: TERRAIN_HEIGHT, terrain };
+}
+
 function sample(xs: number[], ys: number[]): { xs: number[]; ys: number[] } {
   const n = xs.length;
   const stride = Math.max(2, Math.ceil(n / 160));
@@ -152,6 +225,16 @@ function sample(xs: number[], ys: number[]): { xs: number[]; ys: number[] } {
   return { xs: ox, ys: oy };
 }
 
+function hitsDirt(
+  terrain: number[],
+  mask: TerrainMask | undefined,
+  x: number,
+  y: number,
+): boolean {
+  if (mask && mask.length > 0) return maskSolid(mask, x, y);
+  return y >= surfaceAtHeight(terrain, x);
+}
+
 export function trace(
   terrain: number[],
   x0: number,
@@ -160,6 +243,7 @@ export function trace(
   power: number,
   wind: number,
   speedScale: number,
+  mask?: TerrainMask | null,
 ): ShotPath {
   const rad = (angle * Math.PI) / 180;
   const speed = launchSpeed(power, speedScale);
@@ -173,7 +257,10 @@ export function trace(
   let hit = 0;
   let hitX = x;
   let hitY = y;
+  const useMask = !!(mask && mask.length > 0);
   for (let n = 0; n < steps; n++) {
+    const ox = x;
+    const oy = y;
     vy += GRAVITY * DT;
     vx += wind * WIND_ACCEL * DT;
     x += vx * DT;
@@ -193,12 +280,32 @@ export function trace(
       hitY = WORLD_H;
       break;
     }
-    if (dist >= 18 && y >= surfaceAt(terrain, x)) {
-      hit = 1;
-      hitX = x;
-      hitY = y;
-      break;
+    if (dist < 18) continue;
+    if (!useMask) {
+      if (y >= surfaceAtHeight(terrain, x)) {
+        hit = 1;
+        hitX = x;
+        hitY = y;
+        break;
+      }
+      continue;
     }
+    const span = Math.hypot(x - ox, y - oy);
+    const parts = Math.max(1, Math.ceil(span));
+    let struck = false;
+    for (let p = 1; p <= parts; p++) {
+      const t = p / parts;
+      const sx = ox + (x - ox) * t;
+      const sy = oy + (y - oy) * t;
+      if (hitsDirt(terrain, mask ?? undefined, sx, sy)) {
+        hit = 1;
+        hitX = sx;
+        hitY = sy;
+        struck = true;
+        break;
+      }
+    }
+    if (struck) break;
   }
   const sampled = sample(xs, ys);
   return {
@@ -219,7 +326,7 @@ export function muzzle(tank: Tank, angle: number): { x: number; y: number } {
   };
 }
 
-function applyBlast(terrain: number[], cx: number, cy: number, radius: number, kind: "dig" | "fill"): void {
+function applyBlastHeight(terrain: number[], cx: number, cy: number, radius: number, kind: "dig" | "fill"): void {
   const r2 = radius * radius;
   const i0 = Math.floor((cx - radius) / COL_W);
   const i1 = Math.floor((cx + radius) / COL_W);
@@ -242,6 +349,33 @@ function applyBlast(terrain: number[], cx: number, cy: number, radius: number, k
   }
 }
 
+function applyBlastMask(mask: TerrainMask, cx: number, cy: number, radius: number, kind: "dig" | "fill"): void {
+  const r = Math.max(1, Math.floor(radius));
+  const r2 = radius * radius;
+  const x0 = Math.max(0, Math.floor(cx - r));
+  const x1 = Math.min(WORLD_W - 1, Math.ceil(cx + r));
+  const y0 = Math.max(0, Math.floor(cy - r));
+  const y1 = Math.min(WORLD_H - 1, Math.ceil(cy + r));
+  const fill = kind === "fill";
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - cy;
+      if (dx * dx + dy * dy > r2) continue;
+      maskSet(mask, x, y, fill);
+    }
+  }
+}
+
+function applyBlast(state: MatchState, cx: number, cy: number, radius: number, kind: "dig" | "fill"): void {
+  if (state.mask && state.mask.length > 0) {
+    ownMask(state);
+    applyBlastMask(state.mask, cx, cy, radius, kind);
+  } else {
+    applyBlastHeight(state.terrain, cx, cy, radius, kind);
+  }
+}
+
 function hurt(tank: Tank, cx: number, cy: number, radius: number, dmg: number): void {
   if (tank.alive !== 1) return;
   const tx = tank.x + TANK_W / 2;
@@ -258,9 +392,9 @@ function hurt(tank: Tank, cx: number, cy: number, radius: number, dmg: number): 
   }
 }
 
-export function place(tank: Tank, terrain: number[], fall: boolean): void {
+export function place(tank: Tank, terrain: number[], fall: boolean, mask?: TerrainMask | null): void {
   const oldY = tank.y;
-  const ground = surfaceAt(terrain, tank.x + TANK_W / 2);
+  const ground = surfaceAt(terrain, tank.x + TANK_W / 2, mask);
   tank.y = ground - TANK_H;
   if (tank.y > WORLD_H - TANK_H) {
     tank.hp = 0;
@@ -367,6 +501,8 @@ function cloneState(state: MatchState): MatchState {
   return {
     ...state,
     terrain: state.terrain.slice(),
+    // 掩码很大，没挖地时共用同一份；挖地前再拷贝。
+    mask: state.mask,
     tanks: state.tanks.map((t) => ({ ...t })),
     crates: (state.crates ?? []).map((box) => ({ ...box })),
     mines: (state.mines ?? []).map((mine) => ({ ...mine })),
@@ -374,10 +510,14 @@ function cloneState(state: MatchState): MatchState {
   };
 }
 
-export function placeCrates(terrain: number[]): Crate[] {
+function ownMask(state: MatchState): void {
+  if (state.mask) state.mask = new Uint8Array(state.mask);
+}
+
+export function placeCrates(terrain: number[], mask?: TerrainMask | null): Crate[] {
   const crates: Crate[] = [];
   for (const x of [280, 680]) {
-    const ground = surfaceAt(terrain, x);
+    const ground = surfaceAt(terrain, x, mask);
     if (ground < WORLD_H - 8) crates.push({ x, y: ground - 8 });
   }
   return crates;
@@ -412,8 +552,16 @@ export function rollWind(): number {
   return Math.floor(Math.random() * (WIND_MAX * 2 + 1)) - WIND_MAX;
 }
 
-export function createMatch(seed: number, names: [string, string], bodies: [number, number] = [4, 4]): MatchState {
-  const terrain = buildTerrain(seed);
+export function createMatch(
+  seed: number,
+  names: [string, string],
+  bodies: [number, number] = [4, 4],
+  mapId = 1,
+  terrainKind = TERRAIN_HEIGHT,
+): MatchState {
+  const made = makeTerrain(seed, mapId, terrainKind);
+  const terrain = made.terrain;
+  const mask = made.mask;
   const tanks: Tank[] = [0, 1].map((seat) => {
     const body = tankById(bodies[seat]) ?? tankById(4)!;
     const x = seat === 0 ? 96 : WORLD_W - 96 - TANK_W;
@@ -433,7 +581,7 @@ export function createMatch(seed: number, names: [string, string], bodies: [numb
       wait: body.delay,
       opened: 0,
     };
-    place(tank, terrain, false);
+    place(tank, terrain, false, mask);
     return tank;
   });
   return {
@@ -445,9 +593,11 @@ export function createMatch(seed: number, names: [string, string], bodies: [numb
     winner: -1,
     phase: "aim",
     log: `${names[0]} 先手`,
+    terrainKind: made.terrainKind,
     terrain,
+    mask,
     tanks,
-    crates: placeCrates(terrain),
+    crates: placeCrates(terrain, mask),
     mines: [],
     clouds: [],
   };
@@ -488,7 +638,7 @@ function detonateMine(state: MatchState, mine: Mine, trigger: Tank | undefined, 
   mine.gone = true;
   const dmg = mine.damage ?? 320;
   const radius = mine.radius ?? 30;
-  applyBlast(state.terrain, mine.x, mine.y, radius, "dig");
+  applyBlast(state, mine.x, mine.y, radius, "dig");
   for (const other of state.tanks) hurt(other, mine.x, mine.y, radius, dmg);
   if (trigger && trigger.alive === 1) {
     const reach = radius + HIT_PAD;
@@ -509,7 +659,7 @@ function settleGround(state: MatchState, note: { text: string }): void {
     let boom = false;
     for (const mine of mines) {
       if (mine.gone) continue;
-      const ground = surfaceAt(state.terrain, mine.x);
+      const ground = surfaceAt(state.terrain, mine.x, state.mask);
       if (ground >= WORLD_H - 2) mine.gone = true;
       else mine.y = ground - 6;
     }
@@ -524,7 +674,7 @@ function settleGround(state: MatchState, note: { text: string }): void {
       if (boom) break;
     }
     if (!boom) break;
-    for (const other of state.tanks) place(other, state.terrain, true);
+    for (const other of state.tanks) place(other, state.terrain, true, state.mask);
     state.crates = collectStanding(state.tanks, state.crates as Array<Crate & { gone?: boolean }>, note);
   }
   state.mines = mines.filter((mine) => !mine.gone).map(({ x, y, damage, radius }) => ({ x, y, damage, radius }));
@@ -659,7 +809,7 @@ export function resolveFire(
     for (const ang of shotAngles(angle, weapon)) {
       const a = clampAngle(ang);
       const m = muzzle(tank, a);
-      const tr = trace(next.terrain, m.x, m.y, a, power, next.wind, weapon.speed);
+      const tr = trace(next.terrain, m.x, m.y, a, power, next.wind, weapon.speed, next.mask);
       tr.radius = effect === "mine" ? 0 : weapon.radius;
       tr.weapon = weapon.id;
       volley.push(tr);
@@ -670,7 +820,7 @@ export function resolveFire(
       if (effect === "mine") {
         const mine: Mine = {
           x: tr.hitX,
-          y: surfaceAt(next.terrain, tr.hitX) - 6,
+          y: surfaceAt(next.terrain, tr.hitX, next.mask) - 6,
           damage,
           radius: weapon.radius,
         };
@@ -678,7 +828,7 @@ export function resolveFire(
         planted.push({ mine, shot: tr });
         continue;
       }
-      applyBlast(next.terrain, tr.hitX, tr.hitY, weapon.radius, kind);
+      applyBlast(next, tr.hitX, tr.hitY, weapon.radius, kind);
       for (const other of next.tanks) {
         hurt(other, tr.hitX, tr.hitY, weapon.radius, damage);
         if (other.alive === 1 && inReach(other, tr.hitX, tr.hitY, weapon.radius)) {
@@ -704,7 +854,7 @@ export function resolveFire(
       }
     }
   }
-  for (const other of next.tanks) place(other, next.terrain, true);
+  for (const other of next.tanks) place(other, next.terrain, true, next.mask);
   next.crates = collectStanding(next.tanks, boxes, note);
   settleGround(next, note);
   for (const item of planted) {
@@ -764,12 +914,15 @@ export function resolveMove(
   if (tank.fuel < MOVE_COST) return { ok: false, msg: "燃料用完了，请开炮", next: state };
   const nx = tank.x + dir * MOVE_STEP;
   if (nx < 16 || nx + TANK_W > WORLD_W - 16) return { ok: false, msg: "到头了，换个方向或开炮", next: state };
-  const ground = surfaceAt(next.terrain, nx + TANK_W / 2);
+  const ground = surfaceAt(next.terrain, nx + TANK_W / 2, next.mask);
   if (ground >= WORLD_H - 2) return { ok: false, msg: "前面是坑", next: state };
+  if (next.mask && next.mask.length > 0 && bodyBlocked(next.mask, nx, ground - TANK_H)) {
+    return { ok: false, msg: "前面有土挡着", next: state };
+  }
   tank.x = nx;
   tank.fuel -= MOVE_COST;
   tank.wait = (tank.wait ?? 0) + 10;
-  place(tank, next.terrain, true);
+  place(tank, next.terrain, true, next.mask);
   const note = { text: "" };
   next.crates = collectStanding(next.tanks, next.crates as Array<Crate & { gone?: boolean }>, note);
   settleGround(next, note);
@@ -848,8 +1001,21 @@ export function preview(
   if (!tank) return null;
   const a = clampAngle(angle);
   const m = muzzle(tank, a);
-  const tr = trace(state.terrain, m.x, m.y, a, clampPower(power), state.wind, weapon.speed);
+  const tr = trace(state.terrain, m.x, m.y, a, clampPower(power), state.wind, weapon.speed, state.mask);
   tr.weapon = weapon.id;
   tr.radius = weapon.radius;
   return tr;
+}
+
+function bodyBlocked(mask: TerrainMask, x: number, y: number): boolean {
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const x1 = Math.floor(x + TANK_W - 1);
+  const y1 = Math.floor(y + TANK_H - 1);
+  for (let py = y0; py <= y1; py++) {
+    for (let px = x0; px <= x1; px++) {
+      if (maskSolid(mask, px, py)) return true;
+    }
+  }
+  return false;
 }
