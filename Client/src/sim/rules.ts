@@ -19,6 +19,8 @@ import {
   MUZZLE,
   TANK_H,
   TANK_W,
+  TURN_SEC,
+  TURN_WAIT,
   WIND_ACCEL,
   WIND_MAX,
   WORLD_H,
@@ -83,6 +85,7 @@ export interface MatchState {
   crates: Crate[];
   mines: Mine[];
   clouds: Cloud[];
+  clock?: number;
 }
 
 export interface ShotPath {
@@ -620,6 +623,7 @@ export function resolveFire(
   power: number,
   weaponId: number,
   nextWind: number,
+  thinkSec = 0,
 ): { ok: boolean; msg: string; shots: ShotPath[]; next: MatchState } {
   if (state.phase !== "aim") return { ok: false, msg: "对局已结束", shots: [], next: state };
   if (state.turn !== seat) return { ok: false, msg: "还没轮到你", shots: [], next: state };
@@ -722,16 +726,19 @@ export function resolveFire(
   const winner = judge(next.tanks);
   next.winner = winner;
   next.rev += 1;
+  const think = Math.max(0, Math.min(TURN_SEC, Math.floor(thinkSec)));
+  const timeWait = think * TURN_WAIT;
+  const timeNote = think > 0 ? `，出手 ${think} 秒，等待 +${timeWait}` : "";
   const rage = damage !== weapon.damage ? "（半血加力）" : "";
   const twin = passes === 2 ? "（双发）" : "";
-  const shotLog = `${tank.name} 发射了${weapon.name}${twin}${rage}${effectNote}`;
+  const shotLog = `${tank.name} 发射了${weapon.name}${twin}${rage}${effectNote}${timeNote}`;
   if (winner !== -1) {
     next.phase = "over";
-    next.log = winnerText(next.tanks, winner) + effectNote;
+    next.log = winnerText(next.tanks, winner) + effectNote + timeNote;
   } else {
     next.wind = nextWind;
     tank.opened = 1;
-    tank.wait = (tank.wait ?? 0) + (weapon.slot === 2 ? 200 : 100);
+    tank.wait = (tank.wait ?? 0) + (weapon.slot === 2 ? 200 : 100) + timeWait;
     const nxt = nextActor(next.tanks, seat);
     next.turn = nxt;
     refill(next, nxt);
@@ -801,6 +808,32 @@ export function resolveUse(
   }
   next.rev += 1;
   return { ok: true, msg: "ok", next };
+}
+
+export function resolveExpire(state: MatchState): MatchState {
+  if (state.phase !== "aim") return state;
+  const next = cloneState(state);
+  const seat = next.turn;
+  const tank = tankAt(next.tanks, seat);
+  if (!tank || tank.alive !== 1) return state;
+  tank.opened = 1;
+  tank.armed = 0;
+  tank.still = 0;
+  tank.wait = (tank.wait ?? 0) + TURN_SEC * TURN_WAIT;
+  next.rev += 1;
+  const winner = judge(next.tanks);
+  next.winner = winner;
+  const note = `${tank.name} 时间到，等待 +${TURN_SEC * TURN_WAIT}`;
+  if (winner !== -1) {
+    next.phase = "over";
+    next.log = winnerText(next.tanks, winner);
+    return next;
+  }
+  next.turn = nextActor(next.tanks, seat);
+  refill(next, next.turn);
+  const extra = openTurn(next);
+  next.log = next.phase === "over" ? winnerText(next.tanks, next.winner) + extra : note + extra;
+  return next;
 }
 
 export function preview(

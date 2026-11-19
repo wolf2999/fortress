@@ -67,6 +67,7 @@ csJoinBattle 2 {
 	crates 10 : *Crate
 	mines 11 : *Mine
 	clouds 12 : *Cloud
+	clock 13 : integer
 }
 
 scState 3 {

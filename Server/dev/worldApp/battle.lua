@@ -82,6 +82,25 @@ local function clouds_msg(match)
 	return clouds
 end
 
+local function clock_left(match)
+	if match.phase ~= "aim" or not match.turn_at then
+		return 0
+	end
+	local elapsed = skynet.now() - match.turn_at
+	if elapsed < 0 then
+		return C.turnSec
+	end
+	local sec = math.floor(elapsed / 100)
+	if sec > C.turnSec then
+		sec = C.turnSec
+	end
+	return C.turnSec - sec
+end
+
+local function turn_think(match)
+	return C.turnSec - clock_left(match)
+end
+
 local function state_msg(match, you)
 	return {
 		rev = match.rev,
@@ -97,6 +116,7 @@ local function state_msg(match, you)
 		crates = crates_msg(match),
 		mines = mines_msg(match),
 		clouds = clouds_msg(match),
+		clock = clock_left(match),
 	}
 end
 
@@ -180,10 +200,24 @@ local function spawn_tank(seat, fd, uid, name, bot, terrain, team, x, bodyId)
 	}
 	rules.apply_body(tank, bodyId)
 	rules.place(tank, terrain, false)
+	if bot == 1 then
+		-- 与本地双人的随身数量相同，不花 CRING，也不计入胜场花费。
+		tank.kit = { [1] = 3, [2] = 2, [3] = 1 }
+	end
 	return tank
 end
 
 local schedule_bot
+local payout
+local bot_act
+local arm_bot
+local note_turn
+local TURN_CS = C.turnSec * 100
+
+-- 中心距小于这个值就后退，大于那个值就靠近。中间只在落点明显偏了时换一侧。
+local BOT_CLOSE = 260
+local BOT_FAR = 460
+local BOT_POWERS = { 350, 550, 750, 950 }
 
 local function bot_turn(match)
 	if match.phase ~= "aim" then
@@ -196,47 +230,244 @@ local function bot_turn(match)
 	return nil
 end
 
-local function bot_pick(match, me, weapon)
-	local foe
+local function living_foe(match, me)
 	for seat = 0, 7 do
 		local tank = match.seats[seat]
 		if tank and tank.alive == 1 and tank.seat ~= me.seat then
-			foe = tank
-			break
+			return tank
 		end
 	end
-	local lo, hi = rules.angle_window(me)
-	if not foe then
-		return math.floor((lo + hi) / 2), 650
+	return nil
+end
+
+local function aim_angles(angle, weapon)
+	local n = weapon.count or 1
+	local spread = weapon.spread or 0
+	if n == 2 then
+		return { angle - spread, angle + spread }
 	end
-	local target = foe.x + C.tankW / 2
-	local best, bestDist = nil, 1e9
-	local powers = { 350, 550, 750, 950 }
+	if n >= 3 then
+		return { angle - spread, angle, angle + spread }
+	end
+	return { angle }
+end
+
+local function best_shot(match, tank, weapon, wind)
+	local lo, hi = rules.angle_window(tank)
+	local foe = living_foe(match, tank)
+	if not foe or not weapon then
+		return math.floor((lo + hi) / 2), 650, 1e9
+	end
+	local fx = foe.x + C.tankW / 2
+	local fy = foe.y + C.tankH / 2
+	local bestAng, bestPow, bestDist = nil, nil, 1e9
 	for ang = lo, hi, 5 do
-		for _, pow in ipairs(powers) do
-			local x0, y0 = rules.muzzle(me, ang)
-			local tr = rules.trace(match.terrain, x0, y0, ang, pow, match.wind, weapon.speed or 1)
-			if tr.hit == 1 then
-				local d = math.abs(tr.hitX - target)
-				if d < bestDist then
-					bestDist = d
-					best = { angle = ang, power = pow }
+		for _, pow in ipairs(BOT_POWERS) do
+			local miss = 1e9
+			for _, aim in ipairs(aim_angles(ang, weapon)) do
+				local a = rules.clamp_angle(aim)
+				local x0, y0 = rules.muzzle(tank, a)
+				local tr = rules.trace(match.terrain, x0, y0, a, pow, wind, weapon.speed or 1)
+				if tr.hit == 1 then
+					local dx = tr.hitX - fx
+					local dy = tr.hitY - fy
+					local d = math.sqrt(dx * dx + dy * dy)
+					if d < miss then
+						miss = d
+					end
 				end
+			end
+			if miss < bestDist then
+				bestDist = miss
+				bestAng = ang
+				bestPow = pow
 			end
 		end
 	end
-	if not best then
-		return math.floor((lo + hi) / 2), 650
+	if not bestAng then
+		return math.floor((lo + hi) / 2), 650, bestDist
 	end
-	local ang = best.angle + math.random(-4, 4)
+	return bestAng, bestPow, bestDist
+end
+
+local function shot_reaches(weapon, dist)
+	return weapon and dist and dist <= (weapon.radius or 0) + C.hitPad
+end
+
+-- 这一步能不能落地。返回落地后的 y；坑、悬崖、地雷、没油、冻住都拒绝。
+local function step_lands(match, tank, nx, y, fuel)
+	if fuel < C.moveCost or tank.still == 1 or (tank.frozen or 0) > 0 then
+		return nil
+	end
+	if nx < 16 or nx + C.tankW > C.worldW - 16 then
+		return nil
+	end
+	local ground = rules.surface_at(match.terrain, nx + C.tankW / 2)
+	if ground >= C.worldH - 2 then
+		return nil
+	end
+	local ny = ground - C.tankH
+	if ny - y > 36 then
+		return nil
+	end
+	for _, mine in ipairs(match.mines or {}) do
+		if not mine.gone then
+			local feet = ny + C.tankH
+			if math.abs(feet - (mine.y + 6)) <= 10 and nx < mine.x + 12 and nx + C.tankW > mine.x - 12 then
+				return nil
+			end
+		end
+	end
+	return ny
+end
+
+local function walk(match, me, dir, limit, allow)
+	local dirs = {}
+	local x, y, fuel = me.x, me.y, me.fuel
+	for _ = 1, limit do
+		local nx = x + dir * C.moveStep
+		local ny = step_lands(match, me, nx, y, fuel)
+		if not ny then
+			break
+		end
+		if allow and not allow(nx, ny) then
+			break
+		end
+		dirs[#dirs + 1] = dir
+		x, y, fuel = nx, ny, fuel - C.moveCost
+	end
+	return dirs
+end
+
+local function bot_plan(match, me)
+	local foe = living_foe(match, me)
+	local body = rules.body_of(me.body)
+	local weapon = body and body.weapons[1]
+	if not foe or not weapon then
+		return {}
+	end
+	if me.still == 1 or (me.frozen or 0) > 0 or me.fuel < C.moveCost then
+		return {}
+	end
+	local foe_c = foe.x + C.tankW / 2
+	local function gap(x)
+		return math.abs(foe_c - (x + C.tankW / 2))
+	end
+	local dist = gap(me.x)
+	local toward = foe_c >= me.x + C.tankW / 2 and 1 or -1
+
+	if dist < BOT_CLOSE then
+		return walk(match, me, -toward, 4, function(nx)
+			return gap(nx) < BOT_CLOSE + C.moveStep
+		end)
+	end
+	if dist > BOT_FAR then
+		return walk(match, me, toward, 3, function(nx)
+			return gap(nx) >= BOT_CLOSE
+		end)
+	end
+	local _, _, here = best_shot(match, me, weapon, match.wind)
+	local function miss_at(x, y)
+		local ghost = { x = x, y = y, body = me.body, team = me.team, seat = me.seat }
+		local _, _, d = best_shot(match, ghost, weapon, match.wind)
+		return d
+	end
+	if here <= 70 then
+		return {}
+	end
+	local function peek(dir)
+		local nx = me.x + dir * C.moveStep
+		local ny = step_lands(match, me, nx, me.y, me.fuel)
+		if not ny then
+			return 1e9
+		end
+		return miss_at(nx, ny)
+	end
+	local left, right = peek(-1), peek(1)
+	local dir = left <= right and -1 or 1
+	local miss = dir == -1 and left or right
+	if miss >= here - 20 then
+		return {}
+	end
+	return walk(match, me, dir, 2, function(nx)
+		return gap(nx) >= BOT_CLOSE - C.moveStep and gap(nx) <= BOT_FAR + C.moveStep
+	end)
+end
+
+local function bot_weapon(match, me, body)
+	local w1 = body.weapons[1]
+	local w2 = body.weapons[2]
+	local a1, p1, d1
+	if w1 then
+		a1, p1, d1 = best_shot(match, me, w1, match.wind)
+		if shot_reaches(w1, d1) then
+			return { weapon = w1, ang = a1, pow = p1, reached = true }
+		end
+	end
+	local a2, p2, d2
+	if w2 then
+		a2, p2, d2 = best_shot(match, me, w2, match.wind)
+		if shot_reaches(w2, d2) then
+			return { weapon = w2, ang = a2, pow = p2, reached = true }
+		end
+	end
+	local options = {}
+	if w1 then
+		options[#options + 1] = { weapon = w1, ang = a1, pow = p1, reached = false }
+	end
+	if w2 then
+		options[#options + 1] = { weapon = w2, ang = a2, pow = p2, reached = false }
+	end
+	if #options == 0 then
+		return nil
+	end
+	return options[math.random(#options)]
+end
+
+local function jitter_aim(me, ang, pow)
+	local lo, hi = rules.angle_window(me)
+	ang = ang + math.random(-4, 4)
 	if ang < lo then
 		ang = lo
 	end
 	if ang > hi then
 		ang = hi
 	end
-	local pow = best.power + math.random(-50, 50)
+	pow = pow + math.random(-50, 50)
 	return rules.clamp_angle(ang), rules.clamp_power(pow)
+end
+
+-- 机器人的道具不走数据库。用完把胜场花费改回去，避免免费道具抬高奖金。
+local function bot_use(match, me, itemId)
+	local kit = me.kit
+	if not kit or (kit[itemId] or 0) < 1 then
+		return false
+	end
+	kit[itemId] = kit[itemId] - 1
+	local spent = match.spent
+	local ok = rules.use_item(match, me.seat, itemId)
+	if not ok then
+		kit[itemId] = kit[itemId] + 1
+		return false
+	end
+	match.spent = spent
+	return true
+end
+
+local function bot_heal(match, me)
+	if not me.kit or me.hp >= me.maxHp then
+		return false
+	end
+	local missing = me.maxHp - me.hp
+	local big = math.floor(me.maxHp * 0.4 + 0.5)
+	local small = math.floor(me.maxHp * 0.2 + 0.5)
+	if missing >= big and (me.kit[3] or 0) > 0 then
+		return bot_use(match, me, 3)
+	end
+	if missing >= small and (me.kit[2] or 0) > 0 then
+		return bot_use(match, me, 2)
+	end
+	return false
 end
 
 local function bot_fire(match)
@@ -245,33 +476,108 @@ local function bot_fire(match)
 		return
 	end
 	local body = rules.body_of(me.body)
-	local weapon = body and body.weapons[1]
-	if not weapon then
+	if not body then
 		return
 	end
-	local ang, pow = bot_pick(match, me, weapon)
-	local ok, _msg, shots = rules.fire(match, me.seat, ang, pow, weapon.id, roll_wind())
+	local choice = match.bot_choice
+	if not choice then
+		choice = bot_weapon(match, me, body)
+		match.bot_choice = choice
+	end
+	if not choice then
+		return
+	end
+	if not match.bot_itemed then
+		match.bot_itemed = true
+		if choice.reached and bot_use(match, me, 1) then
+			broadcast_state(match)
+			if match.phase ~= "over" and bot_turn(match) then
+				match.bot_firing = true
+				arm_bot(match, 40, true)
+			end
+			return
+		end
+	end
+	local ang, pow = jitter_aim(me, choice.ang, choice.pow)
+	local ok, _msg, shots = rules.fire(match, me.seat, ang, pow, choice.weapon.id, roll_wind(), turn_think(match))
+	match.bot_choice = nil
+	match.bot_firing = nil
 	if not ok then
 		return
 	end
+	payout(match)
+	note_turn(match)
 	broadcast_resolve(match, shots)
 	schedule_bot(match)
 end
 
-schedule_bot = function(match)
+arm_bot = function(match, delay, keep)
 	if not bot_turn(match) then
 		return
+	end
+	if not keep then
+		match.bot_plan = nil
+		match.bot_opened = nil
+		match.bot_itemed = nil
+		match.bot_choice = nil
+		match.bot_firing = nil
 	end
 	match.bot_token = (match.bot_token or 0) + 1
 	local token = match.bot_token
 	local id = match.id
-	skynet.timeout(150, function()
+	skynet.timeout(delay, function()
 		local cur = matches[id]
 		if not cur or cur.bot_token ~= token then
 			return
 		end
-		bot_fire(cur)
+		bot_act(cur)
 	end)
+end
+
+bot_act = function(match)
+	local me = bot_turn(match)
+	if not me then
+		return
+	end
+	if match.bot_firing then
+		bot_fire(match)
+		return
+	end
+	if not match.bot_opened then
+		match.bot_opened = true
+		if bot_heal(match, me) then
+			broadcast_state(match)
+			if match.phase == "over" or not bot_turn(match) then
+				return
+			end
+			arm_bot(match, 40, true)
+			return
+		end
+	end
+	if not match.bot_plan then
+		match.bot_plan = bot_plan(match, me)
+	end
+	local dir = table.remove(match.bot_plan, 1)
+	if dir then
+		local ok = rules.move(match, me.seat, dir)
+		if ok then
+			payout(match)
+			note_turn(match)
+			broadcast_state(match)
+			if match.phase == "over" or not bot_turn(match) then
+				return
+			end
+			arm_bot(match, 40, true)
+			return
+		end
+		match.bot_plan = {}
+	end
+	match.bot_plan = nil
+	bot_fire(match)
+end
+
+schedule_bot = function(match)
+	arm_bot(match, 150, false)
 end
 
 local function create_match(fd, uid, name, bodyId, botBody)
@@ -464,6 +770,7 @@ local function begin_room_match(room)
 	room.phase = "play"
 	room.log = "对局开始"
 	matches[room.id] = match
+	note_turn(match)
 	broadcast_state(match)
 	broadcast_room(room)
 end
@@ -479,6 +786,46 @@ local function finish_room(match)
 	room.phase = "over"
 	room.log = match.log
 	broadcast_room(room)
+end
+
+local function arm_clock(match)
+	match.clock_token = (match.clock_token or 0) + 1
+	match.clock_seat = match.turn
+	match.turn_at = skynet.now()
+	local token = match.clock_token
+	local id = match.id
+	local seat = match.turn
+	skynet.timeout(TURN_CS, function()
+		local cur = matches[id]
+		if not cur or cur.clock_token ~= token or cur.phase ~= "aim" or cur.turn ~= seat then
+			return
+		end
+		local actor = cur.seats[seat]
+		if actor and actor.bot == 1 then
+			cur.bot_token = (cur.bot_token or 0) + 1
+		end
+		rules.expire(cur)
+		payout(cur)
+		finish_room(cur)
+		note_turn(cur)
+		broadcast_state(cur)
+		if not cur.room then
+			schedule_bot(cur)
+		end
+	end)
+end
+
+note_turn = function(match)
+	if match.phase ~= "aim" then
+		match.clock_token = (match.clock_token or 0) + 1
+		match.clock_seat = nil
+		match.turn_at = nil
+		return
+	end
+	if match.clock_seat == match.turn and match.turn_at then
+		return
+	end
+	arm_clock(match)
 end
 
 local function push_bag(fd, uid)
@@ -498,7 +845,7 @@ local function push_bag(fd, uid)
 	return bag
 end
 
-local function payout(match)
+function payout(match)
 	if match.paid or match.phase ~= "over" then
 		return
 	end
@@ -994,6 +1341,7 @@ local function join(fd, acc, args, uid)
 
 	args = args or {}
 	local match = create_match(fd, uid, name, args.body, args.botBody)
+	note_turn(match)
 	broadcast_state(match)
 	push_bag(fd, uid)
 	schedule_bot(match)
@@ -1094,11 +1442,12 @@ local function handle(name, args, fd, acc, uid)
 	end
 	if name == "csFire" then
 		local wid = math.floor(tonumber(args.weapon) or 1)
-		local ok, msg, shots = rules.fire(match, link.seat, args.angle, args.power, wid, roll_wind())
+		local ok, msg, shots = rules.fire(match, link.seat, args.angle, args.power, wid, roll_wind(), turn_think(match))
 		if not ok then
 			return { ok = 0, msg = msg }
 		end
 		payout(match)
+		note_turn(match)
 		broadcast_resolve(match, shots)
 		finish_room(match)
 		if not match.room then
@@ -1112,6 +1461,7 @@ local function handle(name, args, fd, acc, uid)
 			return { ok = 0, msg = msg }
 		end
 		payout(match)
+		note_turn(match)
 		broadcast_state(match)
 		if not match.room then
 			schedule_bot(match)

@@ -752,7 +752,7 @@ local function finish_if_dead(match, actor)
 end
 
 -- 成功时改写 match，并返回 shots 数组。失败不改状态。
-function M.fire(match, seat, angle, power, weaponId, nextWind)
+function M.fire(match, seat, angle, power, weaponId, nextWind, thinkSec)
 	if match.phase ~= "aim" then
 		return false, "对局已结束", nil
 	end
@@ -900,16 +900,25 @@ function M.fire(match, seat, angle, power, weaponId, nextWind)
 	local winner = M.judge(match)
 	match.winner = winner
 	match.rev = match.rev + 1
+	local think = math.floor(tonumber(thinkSec) or 0)
+	if think < 0 then
+		think = 0
+	end
+	if think > C.turnSec then
+		think = C.turnSec
+	end
+	local time_wait = think * C.turnWait
+	local time_note = think > 0 and string.format("，出手 %d 秒，等待 +%d", think, time_wait) or ""
 	local rage = damage ~= weapon.damage and "（半血加力）" or ""
 	local twin = passes == 2 and "（双发）" or ""
-	local shot_log = tank.name .. " 发射了" .. weapon.name .. twin .. rage .. effect_note()
+	local shot_log = tank.name .. " 发射了" .. weapon.name .. twin .. rage .. effect_note() .. time_note
 	if winner ~= -1 then
 		match.phase = "over"
-		match.log = winner_text(match, winner) .. effect_note()
+		match.log = winner_text(match, winner) .. effect_note() .. time_note
 	else
 		match.wind = nextWind
 		tank.opened = 1
-		tank.wait = (tank.wait or 0) + (weapon.slot == 2 and 200 or 100)
+		tank.wait = (tank.wait or 0) + (weapon.slot == 2 and 200 or 100) + time_wait
 		local nxt = next_actor(match, seat)
 		match.turn = nxt
 		refill(match, nxt)
@@ -967,6 +976,39 @@ function M.move(match, seat, dir)
 	match.log = tank.name .. " 移动了" .. (match.crate_note or "") .. (match.mine_note or "")
 	finish_if_dead(match, tank)
 	return true, "ok"
+end
+
+function M.expire(match)
+	if match.phase ~= "aim" then
+		return false
+	end
+	local seat = match.turn
+	local tank = match.seats[seat]
+	if not tank or tank.alive ~= 1 then
+		return false
+	end
+	tank.opened = 1
+	tank.armed = 0
+	tank.still = 0
+	tank.wait = (tank.wait or 0) + C.turnSec * C.turnWait
+	match.rev = match.rev + 1
+	local winner = M.judge(match)
+	match.winner = winner
+	local note = tank.name .. " 时间到，等待 +" .. (C.turnSec * C.turnWait)
+	if winner ~= -1 then
+		match.phase = "over"
+		match.log = winner_text(match, winner)
+		return true
+	end
+	match.turn = next_actor(match, seat)
+	refill(match, match.turn)
+	local extra = open_turn(match)
+	if match.phase == "over" then
+		match.log = winner_text(match, match.winner) .. extra
+	else
+		match.log = note .. extra
+	end
+	return true
 end
 
 return M

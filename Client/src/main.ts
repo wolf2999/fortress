@@ -26,6 +26,7 @@ import {
   tryMove,
   useItem,
   windText,
+  clockText,
   enterLobby,
   getMode,
   getState,
@@ -216,6 +217,7 @@ function paint(): void {
   el("angle-val").textContent = `${aim.angle}°`;
   el("power-val").textContent = String(aim.power);
   el("wind").textContent = windText(match.wind);
+  el("clock").textContent = clockText();
   const actor = match.tanks.find((tank) => tank.seat === match.turn);
   const who = actor ? `${actor.name}·${tankById(actor.body)?.name ?? ""}` : "";
   const fuel = actor?.fuel ?? 0;
@@ -322,6 +324,9 @@ function paintItems(match: ReturnType<typeof getState>, on: boolean): void {
 angle.addEventListener("input", () => setAim({ angle: Number(angle.value) }));
 power.addEventListener("input", () => setAim({ power: Number(power.value) }));
 el("btn-fire").addEventListener("click", () => tryFire());
+window.setInterval(() => {
+  el("clock").textContent = clockText();
+}, 250);
 el("btn-left").addEventListener("click", () => tryMove(-1));
 el("btn-right").addEventListener("click", () => tryMove(1));
 el("btn-enter").addEventListener("click", () => {

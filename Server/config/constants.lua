@@ -18,4 +18,6 @@ return {
 	dt = 1 / 60,
 	maxLife = 8,
 	hitPad = 14,
+	turnSec = 20,
+	turnWait = 10,
 }

@@ -1,12 +1,13 @@
 import { SprotoCodec } from "../net/codec";
 import { NetSocket } from "../net/socket";
-import { MAPS } from "../sim/constants";
+import { MAPS, TURN_SEC, TURN_WAIT } from "../sim/constants";
 import {
   angleWindow,
   buildTerrain,
   createMatch,
   defaultAngle,
   preview,
+  resolveExpire,
   resolveFire,
   resolveMove,
   resolveUse,
@@ -123,8 +124,51 @@ export function getBag(): BagView {
 }
 const pending = new Map<number, { name: string; resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void }>();
 
+let clockLeft = TURN_SEC;
+let clockAt = 0;
+let clockKey = "";
+
 function emit(): void {
+  followClock();
   listeners.forEach((fn) => fn());
+}
+
+function followClock(): void {
+  if (state.phase !== "aim") {
+    clockAt = 0;
+    clockKey = "";
+    return;
+  }
+  if (mode === "local") {
+    const key = `${state.matchId}:${state.turn}`;
+    if (key === clockKey) return;
+    clockKey = key;
+    clockLeft = TURN_SEC;
+    clockAt = Date.now();
+    return;
+  }
+  const key = `${state.matchId}:${state.turn}:${state.rev}`;
+  if (key === clockKey) return;
+  clockKey = key;
+  clockLeft = state.clock ?? TURN_SEC;
+  clockAt = Date.now();
+}
+
+export function clockSeconds(): number {
+  if (state.phase !== "aim" || clockAt <= 0) return 0;
+  const left = clockLeft - Math.floor((Date.now() - clockAt) / 1000);
+  return left > 0 ? left : 0;
+}
+
+export function clockText(): string {
+  if (state.phase !== "aim" || clockAt <= 0) return "";
+  const left = clockSeconds();
+  const extra = (TURN_SEC - left) * TURN_WAIT;
+  return extra > 0 ? `剩余 ${left} 秒 · 等待 +${extra}` : `剩余 ${left} 秒`;
+}
+
+function thinkSeconds(): number {
+  return TURN_SEC - clockSeconds();
 }
 
 export function subscribe(fn: Listener): () => void {
@@ -353,7 +397,7 @@ export function tryFire(): void {
   const seat = aimSeat();
   const aim = currentAim();
   if (mode === "local") {
-    const result = resolveFire(state, seat, aim.angle, aim.power, aim.weapon, rollWind());
+    const result = resolveFire(state, seat, aim.angle, aim.power, aim.weapon, rollWind(), thinkSeconds());
     if (!result.ok) {
       note(result.msg);
       return;
@@ -850,8 +894,16 @@ function readState(raw: Record<string, unknown>): MatchState {
     crates: objList(raw.crates).map((item) => ({ x: num(item.x), y: num(item.y) })),
     mines: objList(raw.mines).map((item) => ({ x: num(item.x), y: num(item.y) })),
     clouds: objList(raw.clouds).map((item) => ({ x: num(item.x), y: num(item.y), r: num(item.r), left: num(item.left) })),
+    clock: num(raw.clock, TURN_SEC),
   };
 }
+
+window.setInterval(() => {
+  if (mode !== "local" || state.phase !== "aim" || clockAt <= 0 || queue.length > 0) return;
+  if (clockSeconds() > 0) return;
+  state = resolveExpire(state);
+  emit();
+}, 200);
 
 function readShots(v: unknown): ShotPath[] {
   return objList(v).map((raw) => ({

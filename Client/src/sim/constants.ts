@@ -18,6 +18,8 @@ export const MOVE_COST = 10;
 export const DT = 1 / 60;
 export const MAX_LIFE = 8;
 export const HIT_PAD = 14;
+export const TURN_SEC = 20;
+export const TURN_WAIT = 10;
 
 export const MAPS = [
   { id: 1, name: "丘陵", blurb: "缓坡，两边是平地" },
