@@ -1,0 +1,12 @@
+{
+  "host": "10.10.100.85",
+  "port": 22,
+  "user": "123",
+  "password": "123456",
+  "remoteRoot": "/Users/a123/apps",
+  "project": "fortress-server",
+  "dbName": "fortress",
+  "gatePort": 8200,
+  "clusterPorts": [8201, 8202, 8203, 8204],
+  "skynetSource": "F:/maplestory/server/github/skynet"
+}

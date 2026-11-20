@@ -21,6 +21,13 @@ import {
 import { ITEMS } from "../sim/items";
 import { DEFAULT_BODY, fuelMaxOf, weaponsOf } from "../sim/tanks";
 
+/** 网关地址：构建期可用 VITE_GATE_WS 覆盖（公网隧道/域名），默认连当前主机 8200 端口。 */
+function gateUrl(): string {
+  const fromEnv = (import.meta.env.VITE_GATE_WS as string | undefined)?.trim();
+  if (fromEnv) return fromEnv;
+  return `ws://${window.location.hostname}:8200`;
+}
+
 export interface Aim {
   angle: number;
   power: number;
@@ -476,7 +483,7 @@ export async function connectOnline(name: string, body = onlineBody, botBody = o
   screen = "battle";
   room = null;
   notice = "";
-  state = { ...state, matchId: -1, rev: 0, log: "正在连接 ws://127.0.0.1:8090" };
+  state = { ...state, matchId: -1, rev: 0, log: `正在连接 ${gateUrl()}` };
   emit();
   try {
     onlineBody = body || DEFAULT_BODY;
@@ -696,7 +703,7 @@ function openSocket(): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => reject(new Error("连接超时")), 4000);
     socket = new NetSocket(
-      "ws://127.0.0.1:8090",
+      gateUrl(),
       onBytes,
       () => {
         connected = true;

@@ -3,6 +3,8 @@ Client/dist/
 Client/public/protocol/
 
 Server/log/
+Server/node_modules/
+Server/deploy.config.json
 
 Third/
 

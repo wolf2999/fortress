@@ -1,0 +1,14 @@
+{
+  "name": "fortress-server-deploy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "node deploy.mjs",
+    "deploy:auto": "node deploy.mjs --auto",
+    "status": "node test/remote_status.mjs",
+    "log": "node test/remote_log.mjs"
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0"
+  }
+}
